@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nester</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="panel">
+    <div id="header"><h1>W E ⁜ N E S T</h1></div>
+    <form id="settings-form">
+      <section class="section">
+        <div class="grid">
+          <label class="field field-icon">
+            <span class="sr-only">Width</span>
+            <div class="input-with-icon">
+              <img src="icons/W.png" alt="" class="input-icon" />
+              <input id="sheetWidthIn" type="number" step="0.01" min="0.01" />
+            </div>
+          </label>
+          <label class="field field-icon">
+            <span class="sr-only">Max Length</span>
+            <div class="input-with-icon">
+              <img src="icons/H.png" alt="" class="input-icon" />
+              <input id="maxLengthIn" type="number" step="0.01" min="0.01" />
+            </div>
+          </label>
+          <label class="field field-icon">
+            <span class="sr-only">Spacing</span>
+            <div class="input-with-icon">
+              <img src="icons/S.png" alt="" class="input-icon" />
+              <input id="spacingIn" type="number" step="0.01" min="0" />
+            </div>
+          </label>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="grid">
+          <label class="field">
+            <span>Layout Preset</span>
+            <select id="optimizePreset">
+              <option value="Auto">Auto (Recommended)</option>
+              <option value="Compact">Compact</option>
+              <option value="Balanced">Balanced</option>
+              <option value="Ordered">Ordered</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Solver Effort</span>
+            <select id="searchEffort">
+              <option value="Normal">Normal</option>
+              <option value="High">High</option>
+            </select>
+          </label>
+        </div>
+        <label class="check">
+          <input id="allowItemRotationInBlock" type="checkbox" />
+          <span>Item Rotation</span>
+        </label>
+        <label class="check">
+          <input id="allowBlockRotationOnSheet" type="checkbox" />
+          <span>Block Rotation</span>
+        </label>
+      </section>
+
+      <section class="section inventory-section">
+        <div class="section-head">
+          <span id="inventory-meta" class="inventory-meta">Run NEST once to load items</span>
+        </div>
+        <p id="inventory-empty" class="inventory-empty">After the first nest, each file will appear here with an editable quantity.</p>
+        <div id="inventory-list" class="inventory-table" hidden></div>
+      </section>
+
+      <section class="section naming-section">
+        <div class="result-name-fields">
+          <div class="grid grid-3-tight">
+            <label class="field">
+              <div class="number-field">
+                <span class="input-knit">Date</span>
+                <input id="outputDate" type="number" min="1" max="31" step="1" />
+              </div>
+            </label>
+            <label class="field">
+              <div class="number-field">
+                <span class="input-knit">Pcs</span>
+                <input id="outputPcCount" type="number" min="1" max="9" step="1" />
+              </div>
+            </label>
+            <label class="field">
+              <div class="number-field">
+                <span class="input-knit">Choke</span>
+                <input id="outputChokeCount" type="number" min="1" max="8" step="1" />
+              </div>
+            </label>
+          </div>
+
+          <div class="tag-list" aria-label="Output tags">
+            <label class="tag-pill"><input id="tagUSA" type="checkbox" /><span>USA</span></label>
+            <label class="tag-pill"><input id="tagRUSH" type="checkbox" /><span>RUSH</span></label>
+            <label class="tag-pill"><input id="tagCUT" type="checkbox" /><span>CUT</span></label>
+            <label class="tag-pill"><input id="tagOverNight" type="checkbox" /><span>OverNight</span></label>
+            <label class="tag-pill"><input id="tagPurolator" type="checkbox" /><span>Purolator</span></label>
+            <label class="tag-pill"><input id="tagGLS" type="checkbox" /><span>GLS</span></label>
+          </div>
+
+          <button id="btn-copy-output-size" type="button" class="result-size-button" disabled>UVM__--</button>
+        </div>
+      </section>
+
+      <div class="actions actions-sticky">
+        <button id="btn-run" type="submit">NEST</button>
+        <button id="btn-reset" type="button" class="secondary">Reset Defaults</button>
+      </div>
+    </form>
+    <div class="actions footer-actions">
+      <h3>Made by REZA @ WeMust</h3>
+      <h3>version 0.2.1</h3>
+    </div>
+  </main>
+
+  <script src="panel.js"></script>
+</body>
+</html>

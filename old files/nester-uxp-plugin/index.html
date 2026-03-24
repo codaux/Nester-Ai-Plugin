@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Nester DTF Preview</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="panel-root">
+    <h1 class="panel-title">Nester DTF Preview</h1>
+
+    <div class="form-row">
+      <label for="styleSelect">Style</label>
+      <select id="styleSelect">
+        <option value="tight">Tight</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="production">Production</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <label for="blockingSelect">Blocking</label>
+      <select id="blockingSelect">
+        <option value="1">1</option>
+        <option value="2" selected>2</option>
+        <option value="3">3</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <label for="widthFillRange">
+        Width Fill <span id="widthFillValue">50</span>%
+      </label>
+      <input
+        id="widthFillRange"
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value="50"
+      />
+    </div>
+
+    <div class="button-row">
+      <button id="buildPreviewBtn" class="primary">
+        Build Preview
+      </button>
+      <button id="clearPreviewBtn">
+        Clear Preview
+      </button>
+    </div>
+
+    <div class="status-area">
+      <span id="statusText">Ready.</span>
+    </div>
+  </div>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="8.0"
+  ExtensionBundleId="com.nester.ai.cepstarter"
+  ExtensionBundleName="Nester"
+  ExtensionBundleVersion="0.2.13">
+  <ExtensionList>
+    <Extension Id="com.nester.ai.cepstarter.panel" Version="0.2.13" />
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="ILST" Version="[17.0,99.9]" />
+    </HostList>
+    <LocaleList>
+      <Locale Code="All" />
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="12.0" />
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.nester.ai.cepstarter.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/host.jsx</ScriptPath>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>false</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Nester</Menu>
+          <Icons>
+            <Icon Type="Normal">./24.png</Icon>
+            <Icon Type="RollOver">./24.png</Icon>
+            <Icon Type="DarkNormal">./24.png</Icon>
+            <Icon Type="DarkRollOver">./24.png</Icon>
+          </Icons>
+          <Geometry>
+            <Size>
+              <Width>420</Width>
+              <Height>680</Height>
+            </Size>
+            <MinSize>
+              <Width>340</Width>
+              <Height>420</Height>
+            </MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>
+
+
+
+
+
+

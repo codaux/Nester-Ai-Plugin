@@ -1,0 +1,12 @@
+.vscode/
+
+# Archives and packaged builds
+*.7z
+*.zip
+
+# PowerShell/editor temp artifacts
+System.Management.Automation.Internal.Host.InternalHost
+
+# OS noise
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,27 @@
+{
+  "id": "com.example.nester.uxp",
+  "name": "Nester DTF Preview",
+  "version": "0.0.1",
+  "manifestVersion": 5,
+  "requirements": {
+    "hosts": [
+      {
+        "app": "ILST",
+        "minVersion": "28.0.0"
+      }
+    ],
+    "uxp": {
+      "minVersion": "7.0.0"
+    }
+  },
+  "entrypoints": [
+    {
+      "type": "panel",
+      "id": "nester-dtf-preview-panel",
+      "label": {
+        "default": "Nester DTF Preview"
+      },
+      "main": "index.html"
+    }
+  ]
+}
