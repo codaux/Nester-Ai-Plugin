@@ -22,7 +22,7 @@ This repository packages the panel UI, CEP manifest, install script, and ExtendS
 ## Project Structure
 
 ```text
-illustrator-cep-2026-starter/
+WeNest/
   extension/
     CSXS/
       manifest.xml
@@ -51,7 +51,7 @@ illustrator-cep-2026-starter/
 3. Run:
 
    ```powershell
-   cd illustrator-cep-2026-starter
+   cd WeNest
    .\install-dev.ps1
    ```
 
@@ -93,3 +93,4 @@ Running the script again updates the installed extension in place.
 ## Notes
 
 This repository is currently structured as a development CEP extension rather than a signed production release.
+

@@ -3,6 +3,7 @@
 # Archives and packaged builds
 *.7z
 *.zip
+old files/
 
 # PowerShell/editor temp artifacts
 System.Management.Automation.Internal.Host.InternalHost
