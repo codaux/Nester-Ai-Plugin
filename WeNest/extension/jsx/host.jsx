@@ -66,6 +66,29 @@ function getParentFolderName(pathOrName) {
     return (parts.length > 1) ? parts[parts.length - 2] : "";
 }
 
+function getPreferredFolderLabel(pathOrName) {
+    var s = trimStr(pathOrName || "");
+    if (!s) return "";
+
+    s = s.replace(/\\/g, "/");
+    if (s.charAt(s.length - 1) === "/") {
+        s = s.substring(0, s.length - 1);
+    }
+
+    var parts = s.split("/");
+    if (parts.length < 3) return getParentFolderName(s);
+
+    // Ignore the file's direct parent folder and search higher ancestors for names like foo_1234 to foo_123456.
+    for (var i = parts.length - 3; i >= 0; i--) {
+        var part = trimStr(parts[i] || "");
+        if (/.+_\d{4,6}$/.test(part)) {
+            return part;
+        }
+    }
+
+    return getParentFolderName(s);
+}
+
 function parseQtyFromName(name) {
     var base = stripExt(getFileNameOnly(name));
     var m = base.match(/^(\d+)_/);
@@ -2392,23 +2415,26 @@ function nesterGetDefaultSettings() {
 function getSourceFolderLabel(sources) {
     if (!sources || !sources.length) return "";
 
-    var folderName = "";
+    var folderNames = [];
+    var seen = {};
 
     for (var i = 0; i < sources.length; i++) {
-        var candidate = getParentFolderName(sources[i].filePath || "");
-        if (!candidate) continue;
+        var candidate = getPreferredFolderLabel(sources[i].filePath || "");
+        if (!candidate) return "MixedFolders";
 
-        if (!folderName) {
-            folderName = candidate;
-            continue;
+        if (!/.+_\d{4,6}$/.test(candidate)) {
+            return "MixedFolders";
         }
 
-        if (folderName !== candidate) {
-            return "MixedFolders";
+        if (!seen[candidate]) {
+            seen[candidate] = true;
+            folderNames.push(candidate);
         }
     }
 
-    return folderName;
+    if (!folderNames.length) return "";
+    if (folderNames.length === 1) return folderNames[0];
+    return folderNames.join("_AND_");
 }
 
 function buildOutputBoundsText(doc) {

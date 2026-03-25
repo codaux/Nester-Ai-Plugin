@@ -263,20 +263,23 @@
       "UVM",
       String(sanitizeCountInRange(settings.outputDate, 1, 31, DEFAULTS.outputDate))
     ];
+    var pcCount = sanitizeCountInRange(settings.outputPcCount, 1, 9, DEFAULTS.outputPcCount);
+    var chokeCount = sanitizeCountInRange(settings.outputChokeCount, 1, 8, DEFAULTS.outputChokeCount);
 
     if (settings.tagUSA) prefixParts.push("USA");
     if (settings.tagRUSH) prefixParts.push("RUSH");
-    if (settings.tagCUT) prefixParts.push("CUT");
     if (settings.tagOverNight) prefixParts.push("OverNight");
+    if (settings.tagCUT) prefixParts.push("CUT");
     if (settings.tagPurolator) prefixParts.push("Purolator");
     if (settings.tagGLS) prefixParts.push("GLS");
 
     var parts = [
       prefixParts.join("_"),
       String(boundsText),
-      String(sanitizeCountInRange(settings.outputPcCount, 1, 9, DEFAULTS.outputPcCount)) + "pc",
-      String(sanitizeCountInRange(settings.outputChokeCount, 1, 8, DEFAULTS.outputChokeCount)) + "Choke"
+      String(pcCount) + (pcCount > 1 ? "pcs" : "pc")
     ];
+
+    if (chokeCount !== 6) parts.push(String(chokeCount) + "Choke");
 
     if (folderLabel) parts.push(String(folderLabel));
     return parts.join("__");

@@ -37,7 +37,7 @@
       </section>
 
       <section class="section">
-        <div class="grid">
+        <div class="grid settings-top-grid">
           <label class="field">
             <span>Layout Preset</span>
             <select id="optimizePreset">
@@ -54,15 +54,17 @@
               <option value="High">High</option>
             </select>
           </label>
+          <div class="rotation-stack">
+            <label class="check check-grid">
+              <input id="allowItemRotationInBlock" type="checkbox" />
+              <span>Item ↺</span>
+            </label>
+            <label class="check check-grid">
+              <input id="allowBlockRotationOnSheet" type="checkbox" />
+              <span>Block ↺</span>
+            </label>
+          </div>
         </div>
-        <label class="check">
-          <input id="allowItemRotationInBlock" type="checkbox" />
-          <span>Item Rotation</span>
-        </label>
-        <label class="check">
-          <input id="allowBlockRotationOnSheet" type="checkbox" />
-          <span>Block Rotation</span>
-        </label>
       </section>
 
       <section class="section inventory-section">
