@@ -194,15 +194,16 @@ select {
 }
 
 .check-grid {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
   margin-top: 0;
   min-height: 10px;
   justify-content: flex-start;
   padding: 0 4px;
-  /* border: 1px solid #565656; */
-  border-radius: 8px;
-  /* background: #202020; */
   box-sizing: border-box;
   font-size: 11px;
+  cursor: pointer;
 }
 
 .rotation-stack {
@@ -212,8 +213,34 @@ select {
 }
 
 .check-grid input {
-  margin: 0;
-  transform: scale(0.9);
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.check-grid span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 20px;
+  padding: 5px 9px;
+  border: 1px solid #415067;
+  border-radius: 12px;
+  background: #141a24;
+  color: #a9b8cb;
+  line-height: 1;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.check-grid input:checked + span {
+  border-color: #88b3e6;
+  background: #213246;
+  color: #f3f8ff;
+}
+
+.check-grid:hover span {
+  border-color: #607895;
+  color: #dbe8f7;
 }
 
 .actions {
@@ -509,7 +536,7 @@ input.inventory-input {
   border-radius: 10px;
   background: #151a24;
   color: #d7e1ec;
-  font-size: 10px;
+  font-size: 11.5px;
   line-height: 1.35;
   white-space: normal;
   word-break: break-all;
@@ -536,11 +563,4 @@ h3 {
   border-color: #7aa7d8;
   background: #1d2736;
   color: #f0f6ff;
-}
-
-#allowItemRotationInBlock {
-  padding: 0;
-  margin: 0;
-  color: #200bdd;
-  background-color: #f3f8ff;
 }
