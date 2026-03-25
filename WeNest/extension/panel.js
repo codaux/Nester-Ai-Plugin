@@ -379,9 +379,9 @@
     return null;
   }
 
-  function selectPlacedCopy(sourceKey) {
+  function goToPlacedCopy(sourceKey) {
     if (!sourceKey) return;
-    var script = 'nesterSelectPlacedCopyBySourceKey("' + escapeForJsxString(sourceKey) + '")';
+    var script = 'nesterGoToPlacedCopyBySourceKey("' + escapeForJsxString(sourceKey) + '")';
     evalHost(script, function (_result) {});
   }
 
@@ -499,7 +499,7 @@
       if (target.tagName === "INPUT") return;
       var card = findCardElement(target);
       if (!card) return;
-      selectPlacedCopy(card.getAttribute("data-source-key"));
+      goToPlacedCopy(card.getAttribute("data-source-key"));
     });
 
     function handleNamingFieldUpdate(evt) {

@@ -2467,6 +2467,43 @@ function buildOutputBoundsText(doc) {
     return inToStr(width) + "x" + inToStr(height) + "in";
 }
 
+function focusViewOnItem(doc, item) {
+    if (!doc || !item) return;
+
+    var view = null;
+    try { view = doc.activeView; } catch (e1) { view = null; }
+    if (!view) return;
+
+    var vb = null;
+    try { vb = item.visibleBounds; } catch (e2) { vb = null; }
+    if (!vb || vb.length < 4) return;
+
+    var left = Math.min(vb[0], vb[2]);
+    var right = Math.max(vb[0], vb[2]);
+    var top = Math.max(vb[1], vb[3]);
+    var bottom = Math.min(vb[1], vb[3]);
+    var width = Math.max(right - left, EPS);
+    var height = Math.max(top - bottom, EPS);
+
+    try {
+        view.centerPoint = [(left + right) / 2, (top + bottom) / 2];
+    } catch (e3) {}
+
+    try {
+        var viewBounds = view.bounds;
+        if (viewBounds && viewBounds.length >= 4 && view.zoom) {
+            var viewWidth = Math.abs(viewBounds[2] - viewBounds[0]);
+            var viewHeight = Math.abs(viewBounds[1] - viewBounds[3]);
+            if (viewWidth > EPS && viewHeight > EPS) {
+                var fitScale = Math.min(viewWidth / width, viewHeight / height);
+                if (isFinite(fitScale) && fitScale > 0) {
+                    view.zoom = Math.max(0.05, view.zoom * fitScale * 0.82);
+                }
+            }
+        }
+    } catch (e4) {}
+}
+
 function nesterSelectPlacedCopyBySourceKey(sourceKey) {
     var previousLevel = app.userInteractionLevel;
     try {
@@ -2501,6 +2538,50 @@ function nesterSelectPlacedCopyBySourceKey(sourceKey) {
 
         doc.selection = null;
         doc.selection = [found];
+        app.redraw();
+        return _jsonStringify({ ok: true });
+    } catch (e) {
+        return _jsonStringify({ ok: false, error: String(e) });
+    } finally {
+        try { app.userInteractionLevel = previousLevel; } catch (_e) {}
+    }
+}
+
+function nesterGoToPlacedCopyBySourceKey(sourceKey) {
+    var previousLevel = app.userInteractionLevel;
+    try {
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+
+        if (app.documents.length === 0) {
+            return _jsonStringify({ ok: false, error: "No open document found." });
+        }
+
+        var doc = app.activeDocument;
+        var layer = findLayerByName(doc, OUTPUT_LAYER_NAME);
+        if (!layer || layer.pageItems.length === 0) {
+            return _jsonStringify({ ok: false, error: "No built output found." });
+        }
+
+        var needle = "NESTER_SOURCE_KEY=" + String(sourceKey || "");
+        var found = null;
+
+        for (var i = 0; i < layer.pageItems.length; i++) {
+            var item = layer.pageItems[i];
+            try {
+                if (item.note === needle) {
+                    found = item;
+                    break;
+                }
+            } catch (e1) {}
+        }
+
+        if (!found) {
+            return _jsonStringify({ ok: false, error: "No matching placed copy found." });
+        }
+
+        doc.selection = null;
+        doc.selection = [found];
+        focusViewOnItem(doc, found);
         app.redraw();
         return _jsonStringify({ ok: true });
     } catch (e) {

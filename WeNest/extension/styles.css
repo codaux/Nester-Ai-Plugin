@@ -209,7 +209,7 @@ select {
 .rotation-stack {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 4px;
+  gap: 0;
 }
 
 .check-grid input {
@@ -223,7 +223,7 @@ select {
   align-items: center;
   justify-content: center;
   min-height: 20px;
-  padding: 5px 9px;
+  padding: 0px 9px;
   border: 1px solid #415067;
   border-radius: 12px;
   background: #141a24;
@@ -233,9 +233,9 @@ select {
 }
 
 .check-grid input:checked + span {
-  border-color: #88b3e6;
+  border-color: #88b2e6a5;
   background: #213246;
-  color: #f3f8ff;
+  color: #f3f8ffca;
 }
 
 .check-grid:hover span {
