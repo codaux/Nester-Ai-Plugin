@@ -1,9 +1,24 @@
 #target illustrator
 
 // =====================================================
-// WeMust NESTER v6
-// Human-like production nesting
-// Dialog-based rebuild loop + block-aware nesting
+// WeMust NESTER v7
+// Staged production solver rewrite
+//
+// Developer note:
+// The solver is now organized as deterministic staged candidates:
+// 1) collect and normalize sources
+// 2) generate source block plans
+// 3) build global candidate plan sets
+// 4) run primary block layout
+// 5) run compaction pass
+// 6) run adaptive block splitting pass
+// 7) run hole filling pass
+// 8) run local repair pass
+// 9) validate spacing / overlap / bounds
+// 10) score all candidates and choose the winner
+//
+// The stable CEP contract is preserved. The host now returns richer
+// structured debug data under searchMeta plus top-level aliases.
 // =====================================================
 
 var PT_PER_IN = 72;
@@ -16,29 +31,85 @@ var DEFAULTS = {
     sheetWidthIn: 23,
     maxLengthIn: 100,
     spacingIn: 0.25,
-    optimizePreset: "Auto",         // Auto | Compact | Balanced | Ordered
-    searchEffort: "Normal",         // Normal | High
-    mode: "Production",             // kept for legacy ScriptUI dialog
-    orderDiscipline: 45,            // 0..100 (0=aggressive, 100=ordered)
-    maxBlocksPerFile: 2,            // 1..4
-    maxBlockAspectRatio: 3.0,       // lower = less skinny strips
+    optimizePreset: "Auto",
+    searchEffort: "Normal",
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
-    hideSourceLayersAfterBuild: true,
+    hideSourceLayersAfterBuild: true
+};
 
-    // v6
-    useDominantShelf: true,
-    dominantShelfMaxRows: 6,
-    widthFillPriority: 92,          // internally kept high to fill width
-    sameSourceProximity: 55,        // derived from orderDiscipline
-    cavityPenalty: 68               // derived from orderDiscipline
+var BLOCK_UID_COUNTER = 1;
+
+var PERSONALITY_LIBRARY = {
+    Compact: {
+        name: "Compact",
+        orderDiscipline: 24,
+        widthFillPriority: 96,
+        continuityWeight: 24,
+        cavityWeight: 92,
+        fragmentationWeight: 64,
+        holeFillAggressiveness: 95,
+        splitAggressiveness: 92,
+        compactionAggressiveness: 90,
+        maxBlocksPerSource: 5,
+        maxBlockAspectRatio: 4.6,
+        dominantShelfRows: 7,
+        baselineLike: false
+    },
+    Balanced: {
+        name: "Balanced",
+        orderDiscipline: 52,
+        widthFillPriority: 86,
+        continuityWeight: 56,
+        cavityWeight: 76,
+        fragmentationWeight: 58,
+        holeFillAggressiveness: 62,
+        splitAggressiveness: 58,
+        compactionAggressiveness: 64,
+        maxBlocksPerSource: 4,
+        maxBlockAspectRatio: 3.6,
+        dominantShelfRows: 6,
+        baselineLike: false
+    },
+    Ordered: {
+        name: "Ordered",
+        orderDiscipline: 84,
+        widthFillPriority: 72,
+        continuityWeight: 92,
+        cavityWeight: 78,
+        fragmentationWeight: 88,
+        holeFillAggressiveness: 34,
+        splitAggressiveness: 28,
+        compactionAggressiveness: 38,
+        maxBlocksPerSource: 3,
+        maxBlockAspectRatio: 2.7,
+        dominantShelfRows: 5,
+        baselineLike: false
+    },
+    Baseline: {
+        name: "Baseline",
+        orderDiscipline: 62,
+        widthFillPriority: 82,
+        continuityWeight: 68,
+        cavityWeight: 55,
+        fragmentationWeight: 48,
+        holeFillAggressiveness: 8,
+        splitAggressiveness: 0,
+        compactionAggressiveness: 12,
+        maxBlocksPerSource: 3,
+        maxBlockAspectRatio: 3.4,
+        dominantShelfRows: 6,
+        baselineLike: true
+    }
 };
 
 // =====================================================
 // Basic helpers
 // =====================================================
 
-function trimStr(s) { return String(s).replace(/^\s+|\s+$/g, ""); }
+function trimStr(s) {
+    return String(s).replace(/^\s+|\s+$/g, "");
+}
 
 function stripExt(name) {
     var s = String(name);
@@ -56,12 +127,8 @@ function getFileNameOnly(pathOrName) {
 function getParentFolderName(pathOrName) {
     var s = trimStr(pathOrName || "");
     if (!s) return "";
-
     s = s.replace(/\\/g, "/");
-    if (s.charAt(s.length - 1) === "/") {
-        s = s.substring(0, s.length - 1);
-    }
-
+    if (s.charAt(s.length - 1) === "/") s = s.substring(0, s.length - 1);
     var parts = s.split("/");
     return (parts.length > 1) ? parts[parts.length - 2] : "";
 }
@@ -69,21 +136,15 @@ function getParentFolderName(pathOrName) {
 function getPreferredFolderLabel(pathOrName) {
     var s = trimStr(pathOrName || "");
     if (!s) return "";
-
     s = s.replace(/\\/g, "/");
-    if (s.charAt(s.length - 1) === "/") {
-        s = s.substring(0, s.length - 1);
-    }
+    if (s.charAt(s.length - 1) === "/") s = s.substring(0, s.length - 1);
 
     var parts = s.split("/");
     if (parts.length < 3) return getParentFolderName(s);
 
-    // Ignore the file's direct parent folder and search higher ancestors for names like foo_1234 to foo_123456.
     for (var i = parts.length - 3; i >= 0; i--) {
         var part = trimStr(parts[i] || "");
-        if (/.+_\d{4,6}$/.test(part)) {
-            return part;
-        }
+        if (/.+_\d{4,6}$/.test(part)) return part;
     }
 
     return getParentFolderName(s);
@@ -102,7 +163,7 @@ function parseQtyFromName(name) {
 function getItemFileName(item) {
     try {
         if (item.file) return getFileNameOnly(item.file.fsName || item.file.name);
-    } catch (e) {}
+    } catch (e1) {}
     try {
         return getFileNameOnly(item.name);
     } catch (e2) {}
@@ -112,7 +173,7 @@ function getItemFileName(item) {
 function getItemFilePath(item) {
     try {
         if (item.file && item.file.fsName) return String(item.file.fsName);
-    } catch (e) {}
+    } catch (e1) {}
     return "";
 }
 
@@ -130,7 +191,7 @@ function buildSourceKey(name, width, height, ordinal) {
 }
 
 function getVisibleSize(item) {
-    var vb = item.visibleBounds; // [left, top, right, bottom]
+    var vb = item.visibleBounds;
     var w = Math.abs(vb[2] - vb[0]);
     var h = Math.abs(vb[1] - vb[3]);
     return { width: w, height: h };
@@ -138,14 +199,51 @@ function getVisibleSize(item) {
 
 function inToPt(v) { return v * PT_PER_IN; }
 function inToStr(vPt) { return (vPt / PT_PER_IN).toFixed(2); }
-
 function areaOf(w, h) { return w * h; }
 function longSide(w, h) { return (w > h) ? w : h; }
 function shortSide(w, h) { return (w < h) ? w : h; }
 
-function cloneRect(r) { return { x: r.x, y: r.y, w: r.w, h: r.h }; }
+function clamp(v, minV, maxV) {
+    return Math.max(minV, Math.min(maxV, v));
+}
 
-function startsWith(str, prefix) { return String(str).indexOf(prefix) === 0; }
+function startsWith(str, prefix) {
+    return String(str).indexOf(prefix) === 0;
+}
+
+function cloneRect(r) {
+    return { x: r.x, y: r.y, w: r.w, h: r.h };
+}
+
+function cloneRectList(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) out.push(cloneRect(list[i]));
+    return out;
+}
+
+function cloneArray(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) out.push(list[i]);
+    return out;
+}
+
+function cloneSettings(settings) {
+    var out = {};
+    for (var key in settings) {
+        if (settings.hasOwnProperty(key)) out[key] = settings[key];
+    }
+    return out;
+}
+
+function nextBlockUid() {
+    var id = "B" + BLOCK_UID_COUNTER;
+    BLOCK_UID_COUNTER += 1;
+    return id;
+}
+
+function resetBlockUidCounter() {
+    BLOCK_UID_COUNTER = 1;
+}
 
 function uniquePushPartition(list, arr) {
     var key = arr.join("-");
@@ -155,8 +253,71 @@ function uniquePushPartition(list, arr) {
     list.push(arr);
 }
 
-function clamp(v, minV, maxV) {
-    return Math.max(minV, Math.min(maxV, v));
+function sortNumericDesc(a, b) {
+    return b - a;
+}
+
+// =====================================================
+// JSON helpers
+// =====================================================
+
+function _jsonEscape(str) {
+    return String(str)
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, "\\\"")
+        .replace(/\r/g, "\\r")
+        .replace(/\n/g, "\\n");
+}
+
+function _jsonStringify(value) {
+    if (typeof JSON !== "undefined" && JSON.stringify) return JSON.stringify(value);
+
+    if (value === null || value === undefined) return "null";
+    if (typeof value === "string") return "\"" + _jsonEscape(value) + "\"";
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+
+    if (value instanceof Array) {
+        var arrParts = [];
+        for (var i = 0; i < value.length; i++) arrParts.push(_jsonStringify(value[i]));
+        return "[" + arrParts.join(",") + "]";
+    }
+
+    var objParts = [];
+    for (var k in value) {
+        if (!value.hasOwnProperty(k)) continue;
+        objParts.push("\"" + _jsonEscape(k) + "\":" + _jsonStringify(value[k]));
+    }
+    return "{" + objParts.join(",") + "}";
+}
+
+function _jsonParse(str) {
+    if (typeof JSON !== "undefined" && JSON.parse) return JSON.parse(String(str));
+    return eval("(" + str + ")");
+}
+
+function _numOr(v, fallback) {
+    var n = parseFloat(v);
+    return isNaN(n) ? fallback : n;
+}
+
+function _intOr(v, fallback) {
+    var n = parseInt(v, 10);
+    return isNaN(n) ? fallback : n;
+}
+
+function _boolOr(v, fallback) {
+    if (v === true || v === false) return v;
+    if (v === 1 || v === "1" || v === "true") return true;
+    if (v === 0 || v === "0" || v === "false") return false;
+    return fallback;
+}
+
+function _oneOfOr(v, allowed, fallback) {
+    var s = String(v);
+    for (var i = 0; i < allowed.length; i++) {
+        if (allowed[i] === s) return s;
+    }
+    return fallback;
 }
 
 // =====================================================
@@ -181,120 +342,131 @@ function containsRect(outer, inner) {
 }
 
 function isValidRect(r) {
-    return r.w > EPS && r.h > EPS;
+    return r && r.w > EPS && r.h > EPS;
 }
 
-// =====================================================
-// Dialog
-// =====================================================
+function rectArea(r) { return r.w * r.h; }
+function rectCenterX(r) { return r.x + (r.w / 2); }
+function rectCenterY(r) { return r.y + (r.h / 2); }
 
-function showSettingsDialog(current) {
-    var dlg = new Window("dialog", "WeMust NESTER v6");
-    dlg.orientation = "column";
-    dlg.alignChildren = "fill";
+function canMergeHorizontally(a, b) {
+    if (Math.abs(a.y - b.y) > EPS) return false;
+    if (Math.abs(a.h - b.h) > EPS) return false;
+    var aRight = a.x + a.w;
+    var bRight = b.x + b.w;
+    return Math.abs(aRight - b.x) <= EPS || Math.abs(bRight - a.x) <= EPS;
+}
 
-    var p1 = dlg.add("panel", undefined, "Sheet");
-    p1.orientation = "column";
-    p1.alignChildren = "left";
+function canMergeVertically(a, b) {
+    if (Math.abs(a.x - b.x) > EPS) return false;
+    if (Math.abs(a.w - b.w) > EPS) return false;
+    var aBottom = a.y + a.h;
+    var bBottom = b.y + b.h;
+    return Math.abs(aBottom - b.y) <= EPS || Math.abs(bBottom - a.y) <= EPS;
+}
 
-    var g1 = p1.add("group");
-    g1.add("statictext", undefined, "Width (in):");
-    var etWidth = g1.add("edittext", undefined, String(current.sheetWidthIn));
-    etWidth.characters = 7;
+function mergeTwoRects(a, b) {
+    var left = Math.min(a.x, b.x);
+    var top = Math.min(a.y, b.y);
+    var right = Math.max(a.x + a.w, b.x + b.w);
+    var bottom = Math.max(a.y + a.h, b.y + b.h);
+    return { x: left, y: top, w: right - left, h: bottom - top };
+}
 
-    var g2 = p1.add("group");
-    g2.add("statictext", undefined, "Max length (in):");
-    var etLength = g2.add("edittext", undefined, String(current.maxLengthIn));
-    etLength.characters = 7;
-
-    var g3 = p1.add("group");
-    g3.add("statictext", undefined, "Spacing (in):");
-    var etSpacing = g3.add("edittext", undefined, String(current.spacingIn));
-    etSpacing.characters = 7;
-
-    var p2 = dlg.add("panel", undefined, "Packing");
-    p2.orientation = "column";
-    p2.alignChildren = "left";
-
-    var g4 = p2.add("group");
-    g4.add("statictext", undefined, "Mode:");
-    var ddMode = g4.add("dropdownlist", undefined, ["Efficient", "Balanced", "Clean", "Production"]);
-    ddMode.selection = (current.mode === "Efficient") ? 0 : (current.mode === "Clean" ? 2 : (current.mode === "Production" ? 3 : 1));
-
-    var g5 = p2.add("group");
-    g5.add("statictext", undefined, "Max blocks/file:");
-    var ddBlocks = g5.add("dropdownlist", undefined, ["1", "2", "3", "4"]);
-    ddBlocks.selection = Math.max(0, Math.min(3, current.maxBlocksPerFile - 1));
-
-    var g6 = p2.add("group");
-    g6.add("statictext", undefined, "Max block ratio:");
-    var etAspect = g6.add("edittext", undefined, String(current.maxBlockAspectRatio));
-    etAspect.characters = 7;
-
-    var cbItemRot = p2.add("checkbox", undefined, "Allow item rotation inside block");
-    cbItemRot.value = current.allowItemRotationInBlock;
-
-    var cbBlockRot = p2.add("checkbox", undefined, "Allow whole-block rotation on sheet");
-    cbBlockRot.value = current.allowBlockRotationOnSheet;
-
-    var p3 = dlg.add("panel", undefined, "Production Bias");
-    p3.orientation = "column";
-    p3.alignChildren = "left";
-
-    var cbDomShelf = p3.add("checkbox", undefined, "Use dominant item shelf");
-    cbDomShelf.value = current.useDominantShelf;
-
-    var g7 = p3.add("group");
-    g7.add("statictext", undefined, "Dominant shelf max rows:");
-    var ddRows = g7.add("dropdownlist", undefined, ["2", "3", "4", "5", "6", "7", "8"]);
-    ddRows.selection = Math.max(0, Math.min(6, current.dominantShelfMaxRows - 2));
-
-    var g8 = p3.add("group");
-    g8.add("statictext", undefined, "Width fill priority:");
-    var etWidthBias = g8.add("edittext", undefined, String(current.widthFillPriority));
-    etWidthBias.characters = 5;
-
-    var g9 = p3.add("group");
-    g9.add("statictext", undefined, "Same-source proximity:");
-    var etProx = g9.add("edittext", undefined, String(current.sameSourceProximity));
-    etProx.characters = 5;
-
-    var g10 = p3.add("group");
-    g10.add("statictext", undefined, "Cavity penalty:");
-    var etCavity = g10.add("edittext", undefined, String(current.cavityPenalty));
-    etCavity.characters = 5;
-var note = dlg.add("statictext", undefined, "Tip: Production + dominant shelf + width fill 70–90 often gives the most human-like result.");
-    note.characters = 80;
-
-    var btns = dlg.add("group");
-    btns.alignment = "right";
-    btns.add("button", undefined, "Build", {name: "ok"});
-    btns.add("button", undefined, "Cancel", {name: "cancel"});
-
-    if (dlg.show() != 1) return null;
-
-    function parseNum(txt, fallback) {
-        var v = parseFloat(String(txt).replace(",", "."));
-        return (isNaN(v) || v <= 0) ? fallback : v;
+function mergeAdjacentFreeRects(freeRects) {
+    var rects = [];
+    for (var i = 0; i < freeRects.length; i++) {
+        if (isValidRect(freeRects[i])) rects.push(cloneRect(freeRects[i]));
     }
 
-    return {
-        sheetWidthIn: parseNum(etWidth.text, current.sheetWidthIn),
-        maxLengthIn: parseNum(etLength.text, current.maxLengthIn),
-        spacingIn: parseNum(etSpacing.text, current.spacingIn),
-        mode: ddMode.selection ? ddMode.selection.text : current.mode,
-        orderDiscipline: current.orderDiscipline,
-        maxBlocksPerFile: ddBlocks.selection ? parseInt(ddBlocks.selection.text, 10) : current.maxBlocksPerFile,
-        maxBlockAspectRatio: parseNum(etAspect.text, current.maxBlockAspectRatio),
-        allowItemRotationInBlock: cbItemRot.value,
-        allowBlockRotationOnSheet: cbBlockRot.value,
-        hideSourceLayersAfterBuild: current.hideSourceLayersAfterBuild,
-        useDominantShelf: cbDomShelf.value,
-        dominantShelfMaxRows: ddRows.selection ? parseInt(ddRows.selection.text, 10) : current.dominantShelfMaxRows,
-        widthFillPriority: clamp(parseNum(etWidthBias.text, current.widthFillPriority), 0, 100),
-        sameSourceProximity: clamp(parseNum(etProx.text, current.sameSourceProximity), 0, 100),
-        cavityPenalty: clamp(parseNum(etCavity.text, current.cavityPenalty), 0, 100)
-    };
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (var a = 0; a < rects.length; a++) {
+            for (var b = a + 1; b < rects.length; b++) {
+                if (canMergeHorizontally(rects[a], rects[b]) || canMergeVertically(rects[a], rects[b])) {
+                    rects[a] = mergeTwoRects(rects[a], rects[b]);
+                    rects.splice(b, 1);
+                    changed = true;
+                    break;
+                }
+            }
+            if (changed) break;
+        }
+    }
+
+    return rects;
+}
+
+function splitFreeRect(freeRect, usedRect) {
+    var result = [];
+    if (!intersects(freeRect, usedRect)) {
+        result.push(cloneRect(freeRect));
+        return result;
+    }
+
+    var frLeft = freeRect.x;
+    var frTop = freeRect.y;
+    var frRight = freeRect.x + freeRect.w;
+    var frBottom = freeRect.y + freeRect.h;
+
+    var usedLeft = usedRect.x;
+    var usedTop = usedRect.y;
+    var usedRight = usedRect.x + usedRect.w;
+    var usedBottom = usedRect.y + usedRect.h;
+
+    if (usedTop > frTop + EPS) result.push({ x: frLeft, y: frTop, w: freeRect.w, h: usedTop - frTop });
+    if (usedBottom < frBottom - EPS) result.push({ x: frLeft, y: usedBottom, w: freeRect.w, h: frBottom - usedBottom });
+    if (usedLeft > frLeft + EPS) result.push({ x: frLeft, y: frTop, w: usedLeft - frLeft, h: freeRect.h });
+    if (usedRight < frRight - EPS) result.push({ x: usedRight, y: frTop, w: frRight - usedRight, h: freeRect.h });
+
+    return result;
+}
+
+function pruneFreeRects(freeRects) {
+    var pruned = [];
+    for (var i = 0; i < freeRects.length; i++) {
+        if (isValidRect(freeRects[i])) pruned.push(cloneRect(freeRects[i]));
+    }
+
+    pruned = mergeAdjacentFreeRects(pruned);
+
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (var a = 0; a < pruned.length; a++) {
+            if (!pruned[a]) continue;
+            for (var b = 0; b < pruned.length; b++) {
+                if (a === b || !pruned[b]) continue;
+                if (containsRect(pruned[a], pruned[b])) {
+                    pruned[b] = null;
+                    changed = true;
+                }
+            }
+        }
+
+        var compacted = [];
+        for (var k = 0; k < pruned.length; k++) {
+            if (pruned[k] && isValidRect(pruned[k])) compacted.push(pruned[k]);
+        }
+        pruned = mergeAdjacentFreeRects(compacted);
+    }
+
+    return pruned;
+}
+
+function placeAndUpdateFreeRects(freeRects, placement) {
+    var usedRect = { x: placement.x, y: placement.y, w: placement.w, h: placement.h };
+    var newRects = [];
+
+    for (var i = 0; i < freeRects.length; i++) {
+        var splitRects = splitFreeRect(freeRects[i], usedRect);
+        for (var j = 0; j < splitRects.length; j++) {
+            if (isValidRect(splitRects[j])) newRects.push(splitRects[j]);
+        }
+    }
+
+    return pruneFreeRects(newRects);
 }
 
 // =====================================================
@@ -306,7 +478,7 @@ function isOutputLayerName(name) {
 }
 
 function findLayerByName(doc, name) {
-    try { return doc.layers.getByName(name); } catch (e) {}
+    try { return doc.layers.getByName(name); } catch (e1) {}
     return null;
 }
 
@@ -334,7 +506,7 @@ function hideSourceLayers(doc) {
 }
 
 // =====================================================
-// Collect source items
+// Source normalization
 // =====================================================
 
 function collectPlacedItems(doc, quantityOverrides) {
@@ -353,15 +525,12 @@ function collectPlacedItems(doc, quantityOverrides) {
         var sz = getVisibleSize(it);
         var key = buildSourceKey(name, sz.width, sz.height, ordinal);
         var baseQty = parseQtyFromName(name);
-        var overrideQty = quantityOverrides && quantityOverrides.hasOwnProperty(key)
-            ? quantityOverrides[key]
-            : null;
-        var qty = (overrideQty === null || overrideQty === undefined)
-            ? baseQty
-            : Math.max(1, overrideQty);
+        var overrideQty = quantityOverrides && quantityOverrides.hasOwnProperty(key) ? quantityOverrides[key] : null;
+        var qty = (overrideQty === null || overrideQty === undefined) ? baseQty : Math.max(1, overrideQty);
 
         result.push({
             id: "SRC_" + ordinal,
+            ordinal: ordinal,
             key: key,
             ref: it,
             name: name,
@@ -374,47 +543,168 @@ function collectPlacedItems(doc, quantityOverrides) {
             longSide: longSide(sz.width, sz.height),
             shortSide: shortSide(sz.width, sz.height)
         });
+
         ordinal += 1;
     }
 
     return result;
 }
 
-// =====================================================
-// Weights
-// =====================================================
-
-function getModeWeights(settings) {
-    var orderRaw = parseFloat(settings.orderDiscipline);
-    if (isNaN(orderRaw)) orderRaw = DEFAULTS.orderDiscipline;
-    var order = clamp(orderRaw, 0, 100) / 100.0;
-
-    return {
-        // Block planning (smaller = better)
-        planBlockCount: 2200 + (order * 1800),
-        planEmptyCells: 2200 + (order * 700),
-        planAspectPenalty: 11000 + (order * 16000),
-        planBlockArea: 1,
-        planLongSide: 6 + (order * 5),
-        planRotPenalty: 300 + (order * 700),
-
-        // Nesting objective:
-        // 1) minimize projected length aggressively
-        // 2) maximize width fill
-        // 3) reduce disorder/fragments based on order control
-        nestProjectedLen: 1600 + (order * 600),
-        nestWidthWaste: 25000,
-        nestXOffset: 1200 + (order * 3800),
-        nestFragmentPenalty: 300 + (order * 900),
-        nestCavityPenalty: 1500 + (order * 1500),
-        nestAlignBonus: 150 + (order * 450),
-        nestSourceBonus: 22000 + (order * 38000)
-    };
+function collectAndNormalizeSources(doc, settings) {
+    var sources = collectPlacedItems(doc, settings.quantityOverrides);
+    if (!sources || sources.length === 0) throw new Error("No placed items found in the current document.");
+    return sources;
 }
 
 // =====================================================
-// Partition generation
+// Personality + effort config
 // =====================================================
+
+function clonePersonalityTemplate(name) {
+    var src = PERSONALITY_LIBRARY[name];
+    var out = {};
+    for (var k in src) {
+        if (src.hasOwnProperty(k)) out[k] = src[k];
+    }
+    return out;
+}
+
+function createPersonality(name, variantTag) {
+    var p = clonePersonalityTemplate(name);
+    p.variantTag = variantTag || "base";
+    p.strategyName = (variantTag && variantTag !== "base") ? (name + ":" + variantTag) : name;
+
+    if (variantTag === "wide") {
+        p.widthFillPriority = clamp(p.widthFillPriority + 6, 0, 100);
+        p.cavityWeight = clamp(p.cavityWeight + 6, 0, 100);
+        p.maxBlockAspectRatio += 0.3;
+    } else if (variantTag === "dense") {
+        p.splitAggressiveness = clamp(p.splitAggressiveness + 10, 0, 100);
+        p.holeFillAggressiveness = clamp(p.holeFillAggressiveness + 10, 0, 100);
+        p.compactionAggressiveness = clamp(p.compactionAggressiveness + 8, 0, 100);
+    } else if (variantTag === "strict") {
+        p.orderDiscipline = clamp(p.orderDiscipline + 8, 0, 100);
+        p.continuityWeight = clamp(p.continuityWeight + 8, 0, 100);
+        p.maxBlockAspectRatio = Math.max(2.2, p.maxBlockAspectRatio - 0.25);
+    }
+
+    return p;
+}
+
+function getEffortConfig(searchEffort) {
+    if (searchEffort === "High") {
+        return {
+            name: "High",
+            plansPerSource: 4,
+            comboLimit: 7,
+            orderVariantLimit: 6,
+            compactionPasses: 2,
+            splitPasses: 2,
+            holeAttemptsPerHole: 4,
+            repairSweeps: 2,
+            holeScanLimit: 10,
+            primaryPlanLimit: 8,
+            futureFitCheckCount: 8
+        };
+    }
+
+    return {
+        name: "Normal",
+        plansPerSource: 2,
+        comboLimit: 3,
+        orderVariantLimit: 3,
+        compactionPasses: 1,
+        splitPasses: 1,
+        holeAttemptsPerHole: 2,
+        repairSweeps: 1,
+        holeScanLimit: 6,
+        primaryPlanLimit: 4,
+        futureFitCheckCount: 5
+    };
+}
+
+function buildStrategyCandidates(settings) {
+    var strategies = [];
+
+    function pushStrategy(presetName, personalityName, variantTag, isBaseline) {
+        strategies.push({
+            presetName: presetName,
+            personalityName: personalityName,
+            personality: createPersonality(personalityName, variantTag),
+            isBaseline: isBaseline === true
+        });
+    }
+
+    if (settings.optimizePreset === "Auto") {
+        pushStrategy("Auto", "Baseline", "base", true);
+        pushStrategy("Auto", "Compact", "base", false);
+        pushStrategy("Auto", "Balanced", "base", false);
+        pushStrategy("Auto", "Ordered", "base", false);
+
+        if (settings.searchEffort === "High") {
+            pushStrategy("Auto", "Compact", "wide", false);
+            pushStrategy("Auto", "Balanced", "dense", false);
+            pushStrategy("Auto", "Ordered", "strict", false);
+        }
+    } else {
+        pushStrategy(settings.optimizePreset, "Baseline", "base", true);
+        pushStrategy(settings.optimizePreset, settings.optimizePreset, "base", false);
+
+        if (settings.searchEffort === "High") {
+            if (settings.optimizePreset === "Compact") pushStrategy(settings.optimizePreset, "Compact", "wide", false);
+            else if (settings.optimizePreset === "Balanced") pushStrategy(settings.optimizePreset, "Balanced", "dense", false);
+            else if (settings.optimizePreset === "Ordered") pushStrategy(settings.optimizePreset, "Ordered", "strict", false);
+        }
+    }
+
+    return strategies;
+}
+
+// =====================================================
+// Block templates and planning
+// =====================================================
+
+function createBlockTemplateFromGrid(src, grid, planKind, planScore) {
+    return {
+        sourceId: src.id,
+        sourceOrdinal: src.ordinal,
+        sourceKey: src.key,
+        sourceRef: src.ref,
+        sourceName: src.name,
+        sourceBaseQty: src.baseQty,
+        sourceQty: src.qty,
+        sourceWidth: src.width,
+        sourceHeight: src.height,
+        sourceArea: src.area,
+        sourceLongSide: src.longSide,
+        sourceShortSide: src.shortSide,
+        count: grid.count,
+        cols: grid.cols,
+        rows: grid.rows,
+        emptyCells: grid.emptyCells,
+        rotatedInside: grid.rotatedInside,
+        cellW: grid.cellW,
+        cellH: grid.cellH,
+        blockW: grid.blockW,
+        blockH: grid.blockH,
+        area: grid.blockW * grid.blockH,
+        longSide: longSide(grid.blockW, grid.blockH),
+        shortSide: shortSide(grid.blockW, grid.blockH),
+        ratio: grid.ratio,
+        widthFill: grid.widthFill,
+        planKind: planKind || "primary",
+        sourcePlanScore: planScore || 0
+    };
+}
+
+function instantiateBlockFromTemplate(template) {
+    var out = {};
+    for (var key in template) {
+        if (template.hasOwnProperty(key)) out[key] = template[key];
+    }
+    out.uid = nextBlockUid();
+    return out;
+}
 
 function balancedPartition(qty, parts) {
     var arr = [];
@@ -433,10 +723,10 @@ function shiftedPartition(qty, parts, shiftAmount) {
         if (arr[last] <= 1) break;
         arr[0] += 1;
         arr[last] -= 1;
-        moved++;
+        moved += 1;
     }
 
-    arr.sort(function(a, b) { return b - a; });
+    arr.sort(sortNumericDesc);
     return arr;
 }
 
@@ -450,30 +740,25 @@ function generatePartitionCandidates(qty, maxBlocks) {
             uniquePushPartition(out, shiftedPartition(qty, parts, 1));
             if (qty >= 6) uniquePushPartition(out, shiftedPartition(qty, parts, 2));
             if (qty >= 12) uniquePushPartition(out, shiftedPartition(qty, parts, 3));
-            if (qty >= 18) uniquePushPartition(out, shiftedPartition(qty, parts, 4));
         }
     }
 
     return out;
 }
 
-// =====================================================
-// Block planning
-// =====================================================
-
-function chooseBestGridForCount(src, count, settings, favorWide) {
+function chooseBestGridForCount(src, count, settings, personality, favorWide) {
     var sheetWidth = inToPt(settings.sheetWidthIn);
     var maxLength = inToPt(settings.maxLengthIn);
     var spacing = inToPt(settings.spacingIn);
-    var weights = getModeWeights(settings);
-    var maxAspect = settings.maxBlockAspectRatio;
-    var widthBias = settings.widthFillPriority / 100.0;
+    var maxAspect = personality.maxBlockAspectRatio;
+    var widthBias = personality.widthFillPriority / 100.0;
+    var continuityBias = personality.continuityWeight / 100.0;
 
     var candidates = [];
-    var orientations = [{rotated: false, cellW: src.width, cellH: src.height}];
+    var orientations = [{ rotatedInside: false, cellW: src.width, cellH: src.height }];
 
     if (settings.allowItemRotationInBlock) {
-        orientations.push({rotated: true, cellW: src.height, cellH: src.width});
+        orientations.push({ rotatedInside: true, cellW: src.height, cellH: src.width });
     }
 
     for (var o = 0; o < orientations.length; o++) {
@@ -482,9 +767,6 @@ function chooseBestGridForCount(src, count, settings, favorWide) {
         for (var cols = 1; cols <= count; cols++) {
             var rows = Math.ceil(count / cols);
             var emptyCells = rows * cols - count;
-
-            if (favorWide && rows > settings.dominantShelfMaxRows) continue;
-
             var blockW = cols * ori.cellW + (cols - 1) * spacing;
             var blockH = rows * ori.cellH + (rows - 1) * spacing;
 
@@ -492,33 +774,28 @@ function chooseBestGridForCount(src, count, settings, favorWide) {
             if (blockH > maxLength + EPS) continue;
 
             var ratio = longSide(blockW, blockH) / Math.max(shortSide(blockW, blockH), EPS);
-            var excessAspect = Math.max(0, ratio - maxAspect);
-            var aspectPenalty = excessAspect * excessAspect;
-
             var widthFill = blockW / Math.max(sheetWidth, EPS);
-            var widthWaste = 1 - widthFill;
-            var widthBonus = favorWide ? widthFill * 17000 * widthBias : widthFill * 9000 * widthBias;
-
-            var widePenalty = favorWide ? (Math.max(0, rows - settings.dominantShelfMaxRows) * 10000) : 0;
-            var heightPenalty = blockH * 2200;
+            var heightFill = blockH / Math.max(maxLength, EPS);
+            var aspectPenalty = Math.max(0, ratio - maxAspect);
+            var widePenalty = favorWide && rows > personality.dominantShelfRows
+                ? (rows - personality.dominantShelfRows) * 10000
+                : 0;
 
             var score =
-                (emptyCells * weights.planEmptyCells) +
-                (aspectPenalty * weights.planAspectPenalty) +
-                (widthWaste * 45000) +
-                (heightPenalty) +
-                ((blockW * blockH) * weights.planBlockArea) +
-                (longSide(blockW, blockH) * weights.planLongSide) +
-                ((ori.rotated ? 1 : 0) * weights.planRotPenalty) +
-                widePenalty -
-                widthBonus;
+                (emptyCells * (1400 + (continuityBias * 600))) +
+                (aspectPenalty * aspectPenalty * 19000) +
+                ((1 - widthFill) * 25000 * (0.55 + (widthBias * 0.45))) +
+                (heightFill * 3200) +
+                (ratio * 420) +
+                (ori.rotatedInside ? 180 : 0) +
+                widePenalty;
 
             candidates.push({
                 count: count,
                 cols: cols,
                 rows: rows,
                 emptyCells: emptyCells,
-                rotatedInside: ori.rotated,
+                rotatedInside: ori.rotatedInside,
                 cellW: ori.cellW,
                 cellH: ori.cellH,
                 blockW: blockW,
@@ -542,282 +819,393 @@ function chooseBestGridForCount(src, count, settings, favorWide) {
     return candidates[0];
 }
 
-function buildCandidateBlockPlansForSource(src, settings, isDominant) {
-    var dynamicMaxBlocks = settings.maxBlocksPerFile;
-    if (settings.searchEffort === "High") dynamicMaxBlocks = Math.max(dynamicMaxBlocks, 4);
-    else dynamicMaxBlocks = Math.max(dynamicMaxBlocks, 3);
-    dynamicMaxBlocks = Math.min(dynamicMaxBlocks, src.qty);
+function detectDominantSourceId(sources) {
+    if (!sources || sources.length === 0) return null;
+    var best = sources[0];
+    for (var i = 1; i < sources.length; i++) {
+        var src = sources[i];
+        if (src.qty > best.qty) best = src;
+        else if (src.qty === best.qty && src.area > best.area) best = src;
+    }
+    return best.id;
+}
 
-    var keepTop = (settings.searchEffort === "High") ? 3 : 2;
-    var partitions = generatePartitionCandidates(src.qty, dynamicMaxBlocks);
-    var weights = getModeWeights(settings);
+function buildSourcePlanCacheForSource(src, settings, personality, isDominant) {
+    var countCache = {};
+    for (var count = 1; count <= Math.max(1, src.qty); count++) {
+        var grid = chooseBestGridForCount(src, count, settings, personality, isDominant);
+        if (grid) countCache[count] = createBlockTemplateFromGrid(src, grid, count === 1 ? "piece" : "count", 0);
+    }
+
+    return {
+        source: src,
+        isDominant: isDominant,
+        bestBlockByCount: countCache
+    };
+}
+
+function buildSourcePlanCandidates(src, sourceCache, settings, personality, effortConfig) {
+    var maxBlocks = Math.min(src.qty, personality.maxBlocksPerSource + (effortConfig.name === "High" ? 1 : 0));
+    if (maxBlocks < 1) maxBlocks = 1;
+
+    var partitions = generatePartitionCandidates(src.qty, maxBlocks);
     var plans = [];
     var seen = {};
+    var widthBias = personality.widthFillPriority / 100.0;
+    var continuityBias = personality.continuityWeight / 100.0;
 
     for (var p = 0; p < partitions.length; p++) {
         var part = partitions[p];
         var layouts = [];
         var failed = false;
+        var shapeKeyParts = [];
+        var totalArea = 0;
+        var totalEmpty = 0;
+        var totalAspect = 0;
+        var totalWidthFill = 0;
+        var maxHeight = 0;
 
         for (var i = 0; i < part.length; i++) {
-            var grid = chooseBestGridForCount(src, part[i], settings, isDominant && settings.useDominantShelf);
-            if (!grid) {
+            var template = sourceCache.bestBlockByCount[part[i]];
+            if (!template) {
                 failed = true;
                 break;
             }
-            layouts.push(grid);
+
+            layouts.push(template);
+            shapeKeyParts.push([template.count, template.cols, template.rows, template.rotatedInside ? 1 : 0].join(":"));
+            totalArea += template.area;
+            totalEmpty += template.emptyCells;
+            totalAspect += Math.max(0, template.ratio - personality.maxBlockAspectRatio);
+            totalWidthFill += template.widthFill;
+            if (template.blockH > maxHeight) maxHeight = template.blockH;
         }
 
         if (failed) continue;
 
-        var totalArea = 0;
-        var totalBlockHeight = 0;
-        var totalEmpty = 0;
-        var totalAspectPenalty = 0;
-        var totalRotPenalty = 0;
-        var maxLong = 0;
-        var totalWidthFill = 0;
-        var shapeKeyParts = [];
-
-        for (var j = 0; j < layouts.length; j++) {
-            totalArea += layouts[j].blockW * layouts[j].blockH;
-            totalEmpty += layouts[j].emptyCells;
-            var ratio = layouts[j].ratio;
-            var excessAspect = Math.max(0, ratio - settings.maxBlockAspectRatio);
-            totalAspectPenalty += excessAspect * excessAspect;
-            if (layouts[j].rotatedInside) totalRotPenalty += 1;
-            totalBlockHeight += layouts[j].blockH;
-            var ls = longSide(layouts[j].blockW, layouts[j].blockH);
-            if (ls > maxLong) maxLong = ls;
-            totalWidthFill += layouts[j].widthFill;
-            shapeKeyParts.push([layouts[j].count, layouts[j].cols, layouts[j].rows, layouts[j].rotatedInside ? 1 : 0].join(':'));
-        }
-
-        var planKey = shapeKeyParts.join('|');
+        var planKey = shapeKeyParts.join("|");
         if (seen[planKey]) continue;
         seen[planKey] = true;
 
-        var widthFillBias = settings.widthFillPriority / 100.0;
-        var dominantBonus = (isDominant && settings.useDominantShelf) ? (totalWidthFill * 18000 * widthFillBias) : 0;
-
         var planScore =
-            (layouts.length * weights.planBlockCount) +
-            (totalEmpty * weights.planEmptyCells) +
-            (totalAspectPenalty * weights.planAspectPenalty) +
-            (totalBlockHeight * 1800) +
-            (totalArea * weights.planBlockArea) +
-            (maxLong * weights.planLongSide) +
-            (totalRotPenalty * weights.planRotPenalty) -
-            dominantBonus;
+            (layouts.length * (1850 + (continuityBias * 950))) +
+            (totalEmpty * 1650) +
+            (totalAspect * totalAspect * 14000) +
+            (maxHeight * 2.2) +
+            ((1 - (totalWidthFill / Math.max(layouts.length, 1))) * 26000 * (0.6 + (widthBias * 0.4))) +
+            (totalArea * 0.00001);
 
         plans.push({
             source: src,
-            score: planScore,
-            partition: part,
-            layouts: layouts,
-            isDominant: isDominant
+            planScore: planScore,
+            partition: cloneArray(part),
+            templates: cloneArray(layouts),
+            isDominant: sourceCache.isDominant
         });
     }
 
     plans.sort(function(a, b) {
-        if (a.score !== b.score) return a.score - b.score;
-        if (a.layouts.length !== b.layouts.length) return a.layouts.length - b.layouts.length;
-        return a.partition.length - b.partition.length;
+        if (a.planScore !== b.planScore) return a.planScore - b.planScore;
+        return a.templates.length - b.templates.length;
     });
 
-    return plans.slice(0, keepTop);
-}
-function detectDominantSource(sources) {
-    if (!sources || sources.length === 0) return null;
-    var sorted = sources.slice(0);
-    sorted.sort(function(a, b) {
-        if (b.qty !== a.qty) return b.qty - a.qty;
-        return b.area - a.area;
-    });
-    return sorted[0].id;
+    return plans.slice(0, effortConfig.plansPerSource);
 }
 
-function sortBlocksForSolve(blocks, settings) {
-    var orderRaw = parseFloat(settings.orderDiscipline);
-    if (isNaN(orderRaw)) orderRaw = DEFAULTS.orderDiscipline;
-    var orderBias = clamp(orderRaw, 0, 100) / 100.0;
-
-    blocks.sort(function(a, b) {
-        if (a.isDominant !== b.isDominant) return a.isDominant ? -1 : 1;
-
-        if (orderBias > 0.55 && a.sourceId !== b.sourceId) {
-            if (a.sourceName < b.sourceName) return -1;
-            if (a.sourceName > b.sourceName) return 1;
-        }
-
-        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-        if (a.blockH !== b.blockH) return a.blockH - b.blockH;
-        if (a.ratio !== b.ratio) return a.ratio - b.ratio;
-        return b.area - a.area;
-    });
-}
-
-function materializeBlocksFromPlans(selectedPlans, settings, dominantId, failedNames) {
-    var blocks = [];
-    var blockUidCounter = 1;
-
-    for (var i = 0; i < selectedPlans.length; i++) {
-        var plan = selectedPlans[i];
-        if (!plan) continue;
-
-        for (var b = 0; b < plan.layouts.length; b++) {
-            var g = plan.layouts[b];
-            blocks.push({
-                uid: "B" + (blockUidCounter++),
-                sourceId: plan.source.id,
-                sourceKey: plan.source.key,
-                sourceRef: plan.source.ref,
-                sourceName: plan.source.name,
-                sourceBaseQty: plan.source.baseQty,
-                sourceQty: plan.source.qty,
-                sourceWidth: plan.source.width,
-                sourceHeight: plan.source.height,
-                sourceArea: plan.source.area,
-                sourceLongSide: plan.source.longSide,
-                sourceShortSide: plan.source.shortSide,
-                planScore: plan.score,
-                planBlockCount: plan.layouts.length,
-
-                count: g.count,
-                cols: g.cols,
-                rows: g.rows,
-                emptyCells: g.emptyCells,
-
-                rotatedInside: g.rotatedInside,
-                cellW: g.cellW,
-                cellH: g.cellH,
-
-                blockW: g.blockW,
-                blockH: g.blockH,
-                area: g.blockW * g.blockH,
-                longSide: longSide(g.blockW, g.blockH),
-                shortSide: shortSide(g.blockW, g.blockH),
-                ratio: g.ratio,
-                widthFill: g.widthFill,
-                isDominant: plan.isDominant
-            });
-        }
-    }
-
-    sortBlocksForSolve(blocks, settings);
-
-    return {
-        blocks: blocks,
-        failedNames: failedNames ? failedNames.slice(0) : [],
-        dominantId: dominantId,
-        selectedPlans: selectedPlans.slice(0)
-    };
-}
-
-function collectSourcePlanSets(sources, settings) {
-    var failedNames = [];
-    var dominantId = settings.useDominantShelf ? detectDominantSource(sources) : null;
-    var planSets = [];
+function generateSourceBlockPlans(sources, personality, effortConfig, settings, debugRoot) {
+    var dominantId = detectDominantSourceId(sources);
+    var bySource = {};
+    var sourcePlanSets = [];
+    var failedSources = [];
+    var sourcePlanSummary = [];
 
     for (var i = 0; i < sources.length; i++) {
         var src = sources[i];
-        var isDominant = (src.id === dominantId);
-        var plans = buildCandidateBlockPlansForSource(src, settings, isDominant);
+        var cache = buildSourcePlanCacheForSource(src, settings, personality, src.id === dominantId);
+        bySource[src.id] = cache;
 
+        var plans = buildSourcePlanCandidates(src, cache, settings, personality, effortConfig);
         if (!plans || plans.length === 0) {
-            failedNames.push(src.name);
+            failedSources.push(src.name);
             continue;
         }
 
-        planSets.push({
+        sourcePlanSets.push({
             source: src,
-            isDominant: isDominant,
-            plans: plans
+            plans: plans,
+            isDominant: cache.isDominant
+        });
+
+        var topScores = [];
+        for (var j = 0; j < plans.length; j++) topScores.push(Math.round(plans[j].planScore));
+
+        sourcePlanSummary.push({
+            sourceId: src.id,
+            sourceKey: src.key,
+            sourceName: src.name,
+            qty: src.qty,
+            isDominant: cache.isDominant,
+            planCount: plans.length,
+            topPlanScores: topScores
         });
     }
 
+    debugRoot.sourcePlanSummary = sourcePlanSummary;
+    debugRoot.failedSources = failedSources;
+
     return {
-        planSets: planSets,
-        failedNames: failedNames,
-        dominantId: dominantId
+        dominantId: dominantId,
+        bySource: bySource,
+        sourcePlanSets: sourcePlanSets,
+        failedSources: failedSources
     };
 }
 
-function buildPlanCombinations(planSets, settings) {
+function buildGlobalCandidatePlanSets(sourcePlanData, personality, effortConfig, settings, debugRoot) {
+    var planSets = sourcePlanData.sourcePlanSets;
     if (!planSets || planSets.length === 0) return [];
 
-    var beamWidth = (settings.searchEffort === "High") ? 4 : 2;
-    var partials = [{ plans: [], heuristicScore: 0, totalLayouts: 0 }];
+    var beam = [{ plans: [], heuristicScore: 0, totalBlockCount: 0 }];
 
     for (var i = 0; i < planSets.length; i++) {
         var next = [];
-        var plans = planSets[i].plans;
+        var localPlans = planSets[i].plans;
 
-        for (var p = 0; p < partials.length; p++) {
-            for (var j = 0; j < plans.length; j++) {
+        for (var b = 0; b < beam.length; b++) {
+            for (var p = 0; p < localPlans.length; p++) {
                 next.push({
-                    plans: partials[p].plans.concat([plans[j]]),
-                    heuristicScore: partials[p].heuristicScore + plans[j].score,
-                    totalLayouts: partials[p].totalLayouts + plans[j].layouts.length
+                    plans: beam[b].plans.concat([localPlans[p]]),
+                    heuristicScore: beam[b].heuristicScore + localPlans[p].planScore,
+                    totalBlockCount: beam[b].totalBlockCount + localPlans[p].templates.length
                 });
             }
         }
 
         next.sort(function(a, b) {
             if (a.heuristicScore !== b.heuristicScore) return a.heuristicScore - b.heuristicScore;
-            return a.totalLayouts - b.totalLayouts;
+            return a.totalBlockCount - b.totalBlockCount;
         });
 
-        if (next.length > beamWidth) next = next.slice(0, beamWidth);
-        partials = next;
+        if (next.length > effortConfig.comboLimit) next = next.slice(0, effortConfig.comboLimit);
+        beam = next;
     }
 
-    return partials;
+    var summaries = [];
+    for (var s = 0; s < beam.length; s++) {
+        summaries.push({
+            comboIndex: s,
+            heuristicScore: Math.round(beam[s].heuristicScore),
+            totalBlockCount: beam[s].totalBlockCount
+        });
+    }
+    debugRoot.globalCandidatePlanSets = summaries;
+
+    return beam;
 }
 
-function buildAllBlocksFromSources(sources, settings) {
-    var planInfo = collectSourcePlanSets(sources, settings);
-    var planCombos = buildPlanCombinations(planInfo.planSets, settings);
-
-    if (planCombos.length === 0) {
-        return {
-            blocks: [],
-            failedNames: planInfo.failedNames,
-            dominantId: planInfo.dominantId,
-            selectedPlans: []
-        };
+function materializeBlocksFromSelectedPlans(planBundle, sourcePlanData) {
+    var blocks = [];
+    for (var i = 0; i < planBundle.plans.length; i++) {
+        var plan = planBundle.plans[i];
+        for (var j = 0; j < plan.templates.length; j++) {
+            var block = instantiateBlockFromTemplate(plan.templates[j]);
+            block.isDominant = plan.isDominant;
+            block.sourcePlanScore = plan.planScore;
+            blocks.push(block);
+        }
     }
-
-    return materializeBlocksFromPlans(
-        planCombos[0].plans,
-        settings,
-        planInfo.dominantId,
-        planInfo.failedNames
-    );
+    return blocks;
 }
 
 // =====================================================
-// MaxRects-like nesting for blocks
+// Ordering
 // =====================================================
+
+function compareStrings(a, b) {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+}
+
+function buildBlockOrderVariants(blocks, personality, effortConfig, mode) {
+    var variants = [];
+    var seen = {};
+    var orderBias = personality.orderDiscipline / 100.0;
+
+    function pushVariant(order, label) {
+        var sig = [];
+        for (var i = 0; i < order.length; i++) sig.push(order[i].uid);
+        sig = sig.join("|");
+        if (seen[sig]) return;
+        seen[sig] = true;
+        variants.push({ label: label, order: order });
+    }
+
+    var base = cloneArray(blocks);
+    base.sort(function(a, b) {
+        if (personality.baselineLike) {
+            if (b.area !== a.area) return b.area - a.area;
+            if (b.longSide !== a.longSide) return b.longSide - a.longSide;
+            return compareStrings(a.sourceName, b.sourceName);
+        }
+
+        if (mode === "repair") {
+            if (a.count !== b.count) return a.count - b.count;
+            if (a.area !== b.area) return a.area - b.area;
+            return compareStrings(a.sourceName, b.sourceName);
+        }
+
+        if (mode === "compaction") {
+            if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
+            if (a.blockH !== b.blockH) return a.blockH - b.blockH;
+            return b.area - a.area;
+        }
+
+        if (orderBias > 0.72) {
+            var sourceCmp = compareStrings(a.sourceName, b.sourceName);
+            if (sourceCmp !== 0) return sourceCmp;
+        }
+
+        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
+        if (b.area !== a.area) return b.area - a.area;
+        return a.blockH - b.blockH;
+    });
+    pushVariant(base, "base");
+
+    var widthFirst = cloneArray(blocks);
+    widthFirst.sort(function(a, b) {
+        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
+        if (a.blockH !== b.blockH) return a.blockH - b.blockH;
+        return b.area - a.area;
+    });
+    pushVariant(widthFirst, "widthFirst");
+
+    var areaFirst = cloneArray(blocks);
+    areaFirst.sort(function(a, b) {
+        if (b.area !== a.area) return b.area - a.area;
+        if (b.count !== a.count) return b.count - a.count;
+        return compareStrings(a.sourceName, b.sourceName);
+    });
+    pushVariant(areaFirst, "areaFirst");
+
+    if (!personality.baselineLike) {
+        var sourceGrouped = cloneArray(blocks);
+        sourceGrouped.sort(function(a, b) {
+            var sourceCmp = compareStrings(a.sourceName, b.sourceName);
+            if (sourceCmp !== 0) return sourceCmp;
+            if (b.count !== a.count) return b.count - a.count;
+            return b.area - a.area;
+        });
+        pushVariant(sourceGrouped, "sourceGrouped");
+    }
+
+    if (mode === "repair" || personality.splitAggressiveness > 40) {
+        var smallFirst = cloneArray(blocks);
+        smallFirst.sort(function(a, b) {
+            if (a.count !== b.count) return a.count - b.count;
+            if (a.area !== b.area) return a.area - b.area;
+            return compareStrings(a.sourceName, b.sourceName);
+        });
+        pushVariant(smallFirst, "smallFirst");
+    }
+
+    if (mode === "compaction" || personality.compactionAggressiveness > 55) {
+        var interleave = [];
+        var grouped = {};
+        var keys = [];
+        var gi;
+        for (gi = 0; gi < blocks.length; gi++) {
+            var srcId = blocks[gi].sourceId;
+            if (!grouped[srcId]) {
+                grouped[srcId] = [];
+                keys.push(srcId);
+            }
+            grouped[srcId].push(blocks[gi]);
+        }
+        keys.sort();
+        var active = true;
+        while (active) {
+            active = false;
+            for (gi = 0; gi < keys.length; gi++) {
+                if (grouped[keys[gi]].length > 0) {
+                    interleave.push(grouped[keys[gi]].shift());
+                    active = true;
+                }
+            }
+        }
+        if (interleave.length > 0) pushVariant(interleave, "interleave");
+    }
+
+    if (variants.length > effortConfig.orderVariantLimit) variants = variants.slice(0, effortConfig.orderVariantLimit);
+    return variants;
+}
+
+// =====================================================
+// Placement
+// =====================================================
+
+function countPlacedCopies(layoutState) {
+    var total = 0;
+    if (!layoutState || !layoutState.placed) return 0;
+    for (var i = 0; i < layoutState.placed.length; i++) total += layoutState.placed[i].block.count;
+    return total;
+}
+
+function countUnplacedCopies(layoutState) {
+    var total = 0;
+    if (!layoutState || !layoutState.unplaced) return 0;
+    for (var i = 0; i < layoutState.unplaced.length; i++) total += layoutState.unplaced[i].count;
+    return total;
+}
+
+function clonePlacedList(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+        var p = list[i];
+        out.push({
+            block: p.block,
+            x: p.x,
+            y: p.y,
+            paddedW: p.paddedW,
+            paddedH: p.paddedH,
+            rotatedOnSheet: p.rotatedOnSheet,
+            stageName: p.stageName,
+            placementReason: p.placementReason || ""
+        });
+    }
+    return out;
+}
+
+function cloneLayoutState(layoutState) {
+    return {
+        placed: clonePlacedList(layoutState.placed || []),
+        unplaced: cloneArray(layoutState.unplaced || []),
+        freeRects: cloneRectList(layoutState.freeRects || []),
+        usedLength: layoutState.usedLength || 0,
+        metrics: layoutState.metrics ? cloneSettings(layoutState.metrics) : null,
+        debug: layoutState.debug || null,
+        validation: layoutState.validation ? cloneSettings(layoutState.validation) : null,
+        score: layoutState.score ? cloneSettings(layoutState.score) : null,
+        strategyName: layoutState.strategyName || "",
+        stageName: layoutState.stageName || ""
+    };
+}
 
 function estimateSplitCount(freeRect, usedRect) {
     var count = 0;
-
     var frLeft = freeRect.x;
     var frTop = freeRect.y;
     var frRight = freeRect.x + freeRect.w;
     var frBottom = freeRect.y + freeRect.h;
-
     var usedLeft = usedRect.x;
     var usedTop = usedRect.y;
     var usedRight = usedRect.x + usedRect.w;
     var usedBottom = usedRect.y + usedRect.h;
 
-    if (usedTop > frTop + EPS) count++;
-    if (usedBottom < frBottom - EPS) count++;
-    if (usedLeft > frLeft + EPS) count++;
-    if (usedRight < frRight - EPS) count++;
-
+    if (usedTop > frTop + EPS) count += 1;
+    if (usedBottom < frBottom - EPS) count += 1;
+    if (usedLeft > frLeft + EPS) count += 1;
+    if (usedRight < frRight - EPS) count += 1;
     return count;
 }
 
@@ -839,78 +1227,62 @@ function estimateAlignmentBonus(freeRect, pw, ph, placedSoFar, sheetWidth) {
         if (Math.abs(right - (p.x + p.paddedW)) < EPS) bonus += 1;
         if (Math.abs(bottom - (p.y + p.paddedH)) < EPS) bonus += 1;
     }
+
     return bonus;
 }
 
 function estimateSourceProximityBonus(freeRect, pw, ph, placedSoFar, sourceId) {
     var bonus = 0;
-    var x = freeRect.x;
-    var y = freeRect.y;
-    var cx = x + pw / 2;
-    var cy = y + ph / 2;
+    var cx = freeRect.x + (pw / 2);
+    var cy = freeRect.y + (ph / 2);
 
     for (var i = 0; i < placedSoFar.length; i++) {
         var p = placedSoFar[i];
         if (p.block.sourceId !== sourceId) continue;
-
-        var pcx = p.x + p.paddedW / 2;
-        var pcy = p.y + p.paddedH / 2;
+        var pcx = p.x + (p.paddedW / 2);
+        var pcy = p.y + (p.paddedH / 2);
         var dx = cx - pcx;
         var dy = cy - pcy;
         var dist = Math.sqrt(dx * dx + dy * dy);
-
         bonus += 1 / Math.max(dist, 1);
     }
+
     return bonus;
 }
 
-function estimateWidthFillBonus(freeRect, pw, sheetWidth) {
-    var fillRatio = pw / Math.max(sheetWidth, EPS);
-    return fillRatio;
-}
-
-function estimateCavityPenalty(freeRect, pw, ph) {
+function estimateCavityPenaltyForPlacement(freeRect, pw, ph) {
     var rightW = freeRect.w - pw;
     var bottomH = freeRect.h - ph;
-
     var penalty = 0;
 
     if (rightW > EPS && freeRect.h > EPS) {
-        var ratio1 = longSide(rightW, freeRect.h) / Math.max(shortSide(rightW, freeRect.h), EPS);
-        penalty += ratio1;
+        penalty += longSide(rightW, freeRect.h) / Math.max(shortSide(rightW, freeRect.h), EPS);
     }
-
     if (freeRect.w > EPS && bottomH > EPS) {
-        var ratio2 = longSide(freeRect.w, bottomH) / Math.max(shortSide(freeRect.w, bottomH), EPS);
-        penalty += ratio2;
+        penalty += longSide(freeRect.w, bottomH) / Math.max(shortSide(freeRect.w, bottomH), EPS);
     }
 
     return penalty;
 }
 
-function blockFitsFreeRect(block, rect, settings) {
+function blockFitsRect(block, rect, settings) {
     var spacing = inToPt(settings.spacingIn);
-    var options = [
-        { w: block.blockW + spacing, h: block.blockH + spacing }
-    ];
+    var options = [{ rotatedOnSheet: false, w: block.blockW + spacing, h: block.blockH + spacing }];
 
     if (settings.allowBlockRotationOnSheet) {
-        options.push({ w: block.blockH + spacing, h: block.blockW + spacing });
+        options.push({ rotatedOnSheet: true, w: block.blockH + spacing, h: block.blockW + spacing });
     }
 
     for (var i = 0; i < options.length; i++) {
-        if (options[i].w <= rect.w + EPS && options[i].h <= rect.h + EPS) {
-            return options[i];
-        }
+        if (options[i].w <= rect.w + EPS && options[i].h <= rect.h + EPS) return options[i];
     }
-
     return null;
 }
 
-function estimateFutureFitBonus(nextFreeRects, remainingBlocks, settings) {
+function estimateFutureFitBonus(nextFreeRects, remainingBlocks, settings, effortConfig) {
     if (!remainingBlocks || remainingBlocks.length === 0) return 0;
 
-    var checkedBlocks = Math.min(remainingBlocks.length, 6);
+    var checkedBlocks = Math.min(remainingBlocks.length, effortConfig.futureFitCheckCount);
     var bestBonus = 0;
     var totalBonus = 0;
     var sheetWidth = inToPt(settings.sheetWidthIn);
@@ -921,15 +1293,13 @@ function estimateFutureFitBonus(nextFreeRects, remainingBlocks, settings) {
 
         for (var j = 0; j < nextFreeRects.length; j++) {
             var fr = nextFreeRects[j];
-            var fit = blockFitsFreeRect(block, fr, settings);
+            var fit = blockFitsRect(block, fr, settings);
             if (!fit) continue;
 
             var widthSlack = Math.max(0, fr.w - fit.w);
             var snugWidth = 1 - clamp(widthSlack / Math.max(sheetWidth, EPS), 0, 1);
             var topBias = 1 / (1 + (fr.y / (PT_PER_IN * 8)));
-            var corridorBias = (fr.x + fr.w >= sheetWidth - EPS) ? 1.2 : 1.0;
-            var match = (block.area * 0.015) * (0.45 + 0.35 * snugWidth + 0.20 * topBias) * corridorBias;
-
+            var match = (block.area * 0.015) * (0.55 + (0.45 * snugWidth)) * topBias;
             if (match > blockBest) blockBest = match;
         }
 
@@ -937,68 +1307,57 @@ function estimateFutureFitBonus(nextFreeRects, remainingBlocks, settings) {
         if (blockBest > bestBonus) bestBonus = blockBest;
     }
 
-    return (bestBonus * 2.2) + (totalBonus * 0.55);
+    return (bestBonus * 2.1) + (totalBonus * 0.4);
 }
 
-function computePlacementScore(freeRect, pw, ph, currentUsedLength, placedSoFar, settings, block, futureFitBonus) {
-    var weights = getModeWeights(settings);
+function computePlacementScore(freeRect, pw, ph, currentUsedLength, placedSoFar, settings, block, remainingBlocks, personality, effortConfig) {
     var sheetWidth = inToPt(settings.sheetWidthIn);
     var projectedBottom = freeRect.y + ph;
-    var projectedUsedLength = (projectedBottom > currentUsedLength) ? projectedBottom : currentUsedLength;
+    var projectedUsedLength = projectedBottom > currentUsedLength ? projectedBottom : currentUsedLength;
     var projectedUsedIn = projectedUsedLength / PT_PER_IN;
 
-    var fragPenalty = estimateSplitCount(freeRect, {
+    var nextFreeRects = placeAndUpdateFreeRects([cloneRect(freeRect)], {
         x: freeRect.x,
         y: freeRect.y,
         w: pw,
         h: ph
     });
 
+    var futureFitBonus = estimateFutureFitBonus(nextFreeRects, remainingBlocks, settings, effortConfig);
+    var fragPenalty = estimateSplitCount(freeRect, { x: freeRect.x, y: freeRect.y, w: pw, h: ph });
     var alignBonus = estimateAlignmentBonus(freeRect, pw, ph, placedSoFar, sheetWidth);
     var sourceBonus = estimateSourceProximityBonus(freeRect, pw, ph, placedSoFar, block.sourceId);
-    var widthFill = estimateWidthFillBonus(freeRect, pw, sheetWidth);
-    var widthWaste = 1 - widthFill;
-    var cavityPenalty = estimateCavityPenalty(freeRect, pw, ph);
-    var xOffsetRatio = Math.abs(freeRect.x) / Math.max(sheetWidth, EPS);
-
-    var widthBias = settings.widthFillPriority / 100.0;
-    var proxBias = settings.sameSourceProximity / 100.0;
-    var cavityBias = settings.cavityPenalty / 100.0;
-    var orderRaw = parseFloat(settings.orderDiscipline);
-    if (isNaN(orderRaw)) orderRaw = DEFAULTS.orderDiscipline;
-    var orderBias = clamp(orderRaw, 0, 100) / 100.0;
+    var widthFill = pw / Math.max(sheetWidth, EPS);
+    var cavityPenalty = estimateCavityPenaltyForPlacement(freeRect, pw, ph);
+    var widthBias = personality.widthFillPriority / 100.0;
+    var continuityBias = personality.continuityWeight / 100.0;
+    var cavityBias = personality.cavityWeight / 100.0;
+    var fragmentBias = personality.fragmentationWeight / 100.0;
 
     var total =
-        (projectedUsedIn * weights.nestProjectedLen) +
-        (widthWaste * weights.nestWidthWaste * (0.7 + 0.3 * widthBias)) +
-        (xOffsetRatio * weights.nestXOffset) +
-        (fragPenalty * weights.nestFragmentPenalty) -
-        (alignBonus * weights.nestAlignBonus * (0.5 + 0.5 * orderBias)) -
-        (futureFitBonus || 0) -
-        (sourceBonus * weights.nestSourceBonus * proxBias) +
-        (cavityPenalty * weights.nestCavityPenalty * cavityBias);
+        (projectedUsedIn * 1000) +
+        ((1 - widthFill) * 24000 * (0.55 + (widthBias * 0.45))) +
+        (fragPenalty * 650 * fragmentBias) +
+        (cavityPenalty * 1200 * cavityBias) -
+        (alignBonus * 180) -
+        (sourceBonus * 16000 * continuityBias) -
+        futureFitBonus;
 
     return {
         total: total,
+        projectedUsedLength: projectedUsedLength,
         projectedUsedIn: projectedUsedIn,
-        widthWaste: widthWaste
+        widthFill: widthFill,
+        cavityPenalty: cavityPenalty
     };
 }
 
-function findBestBlockPlacement(block, freeRects, currentUsedLength, settings, placedSoFar, remainingBlocks) {
+function findBestPlacementForBlock(block, freeRects, currentUsedLength, placedSoFar, settings, personality, effortConfig, remainingBlocks, preferredRect) {
     var spacing = inToPt(settings.spacingIn);
-    var orientations = [{
-        rotatedOnSheet: false,
-        w: block.blockW,
-        h: block.blockH
-    }];
+    var orientations = [{ rotatedOnSheet: false, w: block.blockW, h: block.blockH }];
 
     if (settings.allowBlockRotationOnSheet) {
-        orientations.push({
-            rotatedOnSheet: true,
-            w: block.blockH,
-            h: block.blockW
-        });
+        orientations.push({ rotatedOnSheet: true, w: block.blockH, h: block.blockW });
     }
 
     var best = null;
@@ -1010,301 +1369,281 @@ function findBestBlockPlacement(block, freeRects, currentUsedLength, settings, p
 
         for (var i = 0; i < freeRects.length; i++) {
             var fr = freeRects[i];
+            if (preferredRect && (
+                Math.abs(fr.x - preferredRect.x) > EPS ||
+                Math.abs(fr.y - preferredRect.y) > EPS ||
+                Math.abs(fr.w - preferredRect.w) > EPS ||
+                Math.abs(fr.h - preferredRect.h) > EPS
+            )) continue;
 
-            if (paddedW <= fr.w + EPS && paddedH <= fr.h + EPS) {
-                var placement = {
+            if (paddedW > fr.w + EPS || paddedH > fr.h + EPS) continue;
+
+            var score = computePlacementScore(
+                fr,
+                paddedW,
+                paddedH,
+                currentUsedLength,
+                placedSoFar,
+                settings,
+                block,
+                remainingBlocks,
+                personality,
+                effortConfig
+            );
+
+            if (!best) {
+                best = {
                     x: fr.x,
                     y: fr.y,
                     w: paddedW,
                     h: paddedH,
-                    rotatedOnSheet: ori.rotatedOnSheet
+                    rotatedOnSheet: ori.rotatedOnSheet,
+                    score: score
                 };
-                var nextFreeRects = placeAndUpdateFreeRects(freeRects, placement);
-                var futureFitBonus = estimateFutureFitBonus(nextFreeRects, remainingBlocks, settings);
-                var score = computePlacementScore(
-                    fr,
-                    paddedW,
-                    paddedH,
-                    currentUsedLength,
-                    placedSoFar,
-                    settings,
-                    block,
-                    futureFitBonus
-                );
+                continue;
+            }
 
-                if (!best) {
-                    best = {
-                        x: fr.x,
-                        y: fr.y,
-                        w: paddedW,
-                        h: paddedH,
-                        rotatedOnSheet: ori.rotatedOnSheet,
-                        score: score
-                    };
-                    continue;
-                }
+            var betterByLength = score.projectedUsedLength < (best.score.projectedUsedLength - EPS);
+            var tieOnLength = Math.abs(score.projectedUsedLength - best.score.projectedUsedLength) <= EPS;
+            var betterByFill = tieOnLength && (score.widthFill > best.score.widthFill + 1e-6);
+            var tieOnFill = tieOnLength && Math.abs(score.widthFill - best.score.widthFill) <= 1e-6;
+            var betterByScore = tieOnFill && (score.total < best.score.total);
 
-                var betterByLength = score.projectedUsedIn < (best.score.projectedUsedIn - 1e-6);
-                var tieOnLength = Math.abs(score.projectedUsedIn - best.score.projectedUsedIn) <= 1e-6;
-                var betterByWidth = tieOnLength && (score.widthWaste < best.score.widthWaste - 1e-6);
-                var tieOnWidth = tieOnLength && Math.abs(score.widthWaste - best.score.widthWaste) <= 1e-6;
-                var betterByScore = tieOnWidth && (score.total < best.score.total);
-
-                if (betterByLength || betterByWidth || betterByScore) {
-                    best = {
-                        x: fr.x,
-                        y: fr.y,
-                        w: paddedW,
-                        h: paddedH,
-                        rotatedOnSheet: ori.rotatedOnSheet,
-                        score: score
-                    };
-                }
+            if (betterByLength || betterByFill || betterByScore) {
+                best = {
+                    x: fr.x,
+                    y: fr.y,
+                    w: paddedW,
+                    h: paddedH,
+                    rotatedOnSheet: ori.rotatedOnSheet,
+                    score: score
+                };
             }
         }
     }
 
     return best;
 }
-function splitFreeRect(freeRect, usedRect) {
-    var result = [];
 
-    if (!intersects(freeRect, usedRect)) {
-        result.push(cloneRect(freeRect));
-        return result;
-    }
-
-    var frLeft = freeRect.x;
-    var frTop = freeRect.y;
-    var frRight = freeRect.x + freeRect.w;
-    var frBottom = freeRect.y + freeRect.h;
-
-    var usedLeft = usedRect.x;
-    var usedTop = usedRect.y;
-    var usedRight = usedRect.x + usedRect.w;
-    var usedBottom = usedRect.y + usedRect.h;
-
-    if (usedTop > frTop + EPS) result.push({ x: frLeft, y: frTop, w: freeRect.w, h: usedTop - frTop });
-    if (usedBottom < frBottom - EPS) result.push({ x: frLeft, y: usedBottom, w: freeRect.w, h: frBottom - usedBottom });
-    if (usedLeft > frLeft + EPS) result.push({ x: frLeft, y: frTop, w: usedLeft - frLeft, h: freeRect.h });
-    if (usedRight < frRight - EPS) result.push({ x: usedRight, y: frTop, w: frRight - usedRight, h: freeRect.h });
-
-    return result;
-}
-
-function canMergeHorizontally(a, b) {
-    if (Math.abs(a.y - b.y) > EPS) return false;
-    if (Math.abs(a.h - b.h) > EPS) return false;
-
-    var aRight = a.x + a.w;
-    var bRight = b.x + b.w;
-    return Math.abs(aRight - b.x) <= EPS || Math.abs(bRight - a.x) <= EPS;
-}
-
-function canMergeVertically(a, b) {
-    if (Math.abs(a.x - b.x) > EPS) return false;
-    if (Math.abs(a.w - b.w) > EPS) return false;
-
-    var aBottom = a.y + a.h;
-    var bBottom = b.y + b.h;
-    return Math.abs(aBottom - b.y) <= EPS || Math.abs(bBottom - a.y) <= EPS;
-}
-
-function mergeTwoRects(a, b) {
-    var left = Math.min(a.x, b.x);
-    var top = Math.min(a.y, b.y);
-    var right = Math.max(a.x + a.w, b.x + b.w);
-    var bottom = Math.max(a.y + a.h, b.y + b.h);
+function buildLayoutState(placed, unplaced, freeRects, usedLength, strategyName, stageName, debugRoot) {
     return {
-        x: left,
-        y: top,
-        w: right - left,
-        h: bottom - top
+        placed: placed || [],
+        unplaced: unplaced || [],
+        freeRects: freeRects || [],
+        usedLength: usedLength || 0,
+        metrics: null,
+        debug: debugRoot || null,
+        validation: null,
+        score: null,
+        strategyName: strategyName || "",
+        stageName: stageName || ""
     };
 }
 
-function mergeAdjacentFreeRects(freeRects) {
-    var rects = [];
-    for (var i = 0; i < freeRects.length; i++) {
-        if (isValidRect(freeRects[i])) rects.push(cloneRect(freeRects[i]));
-    }
-
-    var changed = true;
-    while (changed) {
-        changed = false;
-
-        for (var a = 0; a < rects.length; a++) {
-            for (var b = a + 1; b < rects.length; b++) {
-                if (canMergeHorizontally(rects[a], rects[b]) || canMergeVertically(rects[a], rects[b])) {
-                    rects[a] = mergeTwoRects(rects[a], rects[b]);
-                    rects.splice(b, 1);
-                    changed = true;
-                    break;
-                }
-            }
-            if (changed) break;
-        }
-    }
-
-    return rects;
-}
-
-function pruneFreeRects(freeRects) {
-    var pruned = [];
-
-    for (var i = 0; i < freeRects.length; i++) {
-        if (isValidRect(freeRects[i])) pruned.push(cloneRect(freeRects[i]));
-    }
-
-    pruned = mergeAdjacentFreeRects(pruned);
-
-    var changed = true;
-    while (changed) {
-        changed = false;
-
-        for (var a = 0; a < pruned.length; a++) {
-            if (!pruned[a]) continue;
-
-            for (var b = 0; b < pruned.length; b++) {
-                if (a === b || !pruned[b]) continue;
-
-                if (containsRect(pruned[a], pruned[b])) {
-                    pruned[b] = null;
-                    changed = true;
-                }
-            }
-        }
-
-        var compacted = [];
-        for (var k = 0; k < pruned.length; k++) {
-            if (pruned[k] && isValidRect(pruned[k])) compacted.push(pruned[k]);
-        }
-        pruned = mergeAdjacentFreeRects(compacted);
-    }
-
-    return pruned;
-}
-function placeAndUpdateFreeRects(freeRects, placement) {
-    var usedRect = { x: placement.x, y: placement.y, w: placement.w, h: placement.h };
-    var newRects = [];
-
-    for (var i = 0; i < freeRects.length; i++) {
-        var splitRects = splitFreeRect(freeRects[i], usedRect);
-        for (var j = 0; j < splitRects.length; j++) {
-            if (isValidRect(splitRects[j])) newRects.push(splitRects[j]);
-        }
-    }
-    return pruneFreeRects(newRects);
-}
-
-function nestBlocksSinglePass(blocks, settings) {
+function nestBlocksByOrder(order, strategyName, stageName, settings, personality, effortConfig) {
     var sheetWidth = inToPt(settings.sheetWidthIn);
     var maxLength = inToPt(settings.maxLengthIn);
-
     var freeRects = [{ x: 0, y: 0, w: sheetWidth, h: maxLength }];
     var placed = [];
     var unplaced = [];
     var usedLength = 0;
 
-    for (var i = 0; i < blocks.length; i++) {
-        var block = blocks[i];
-        var remainingBlocks = blocks.slice(i + 1);
-        var p = findBestBlockPlacement(block, freeRects, usedLength, settings, placed, remainingBlocks);
-
-        if (!p) {
+    for (var i = 0; i < order.length; i++) {
+        var block = order[i];
+        var remaining = order.slice(i + 1);
+        var placement = findBestPlacementForBlock(block, freeRects, usedLength, placed, settings, personality, effortConfig, remaining, null);
+        if (!placement) {
             unplaced.push(block);
             continue;
         }
 
         placed.push({
             block: block,
-            x: p.x,
-            y: p.y,
-            paddedW: p.w,
-            paddedH: p.h,
-            rotatedOnSheet: p.rotatedOnSheet
+            x: placement.x,
+            y: placement.y,
+            paddedW: placement.w,
+            paddedH: placement.h,
+            rotatedOnSheet: placement.rotatedOnSheet,
+            stageName: stageName,
+            placementReason: "primary"
         });
 
-        freeRects = placeAndUpdateFreeRects(freeRects, p);
-
-        var bottom = p.y + p.h;
-        if (bottom > usedLength) usedLength = bottom;
+        freeRects = placeAndUpdateFreeRects(freeRects, placement);
+        if (placement.y + placement.h > usedLength) usedLength = placement.y + placement.h;
     }
 
-    return {
-        placed: placed,
-        unplaced: unplaced,
-        usedLength: usedLength,
-        freeRects: freeRects
-    };
+    return buildLayoutState(placed, unplaced, freeRects, usedLength, strategyName, stageName, null);
 }
 
-function cloneFreeRectList(list) {
-    var out = [];
-    for (var i = 0; i < list.length; i++) out.push(cloneRect(list[i]));
-    return out;
-}
-
-function clonePlacedList(list) {
-    var out = [];
-    for (var i = 0; i < list.length; i++) {
-        var p = list[i];
-        out.push({
-            block: p.block,
-            x: p.x,
-            y: p.y,
-            paddedW: p.paddedW,
-            paddedH: p.paddedH,
-            rotatedOnSheet: p.rotatedOnSheet
-        });
-    }
-    return out;
-}
-
-function backfillUnplaced(layout, settings) {
-    if (!layout || !layout.unplaced || layout.unplaced.length === 0) return layout;
-
-    var placed = clonePlacedList(layout.placed || []);
-    var unplaced = [];
-    for (var i = 0; i < layout.unplaced.length; i++) unplaced.push(layout.unplaced[i]);
-    var freeRects = cloneFreeRectList(layout.freeRects || []);
-    var usedLength = layout.usedLength || 0;
-
+function runBasicBackfill(layoutState, settings, personality, effortConfig, stageName) {
+    var current = cloneLayoutState(layoutState);
     var improved = true;
+
     while (improved) {
         improved = false;
+        current.unplaced.sort(function(a, b) {
+            if (a.count !== b.count) return a.count - b.count;
+            if (a.area !== b.area) return a.area - b.area;
+            return compareStrings(a.sourceName, b.sourceName);
+        });
 
-        for (var idx = 0; idx < unplaced.length; idx++) {
-            var block = unplaced[idx];
-            var remainingBlocks = unplaced.slice(0, idx).concat(unplaced.slice(idx + 1));
-            var p = findBestBlockPlacement(block, freeRects, usedLength, settings, placed, remainingBlocks);
-            if (!p) continue;
+        for (var i = 0; i < current.unplaced.length; i++) {
+            var block = current.unplaced[i];
+            var remaining = current.unplaced.slice(0, i).concat(current.unplaced.slice(i + 1));
+            var placement = findBestPlacementForBlock(block, current.freeRects, current.usedLength, current.placed, settings, personality, effortConfig, remaining, null);
+            if (!placement) continue;
 
-            placed.push({
+            current.placed.push({
                 block: block,
-                x: p.x,
-                y: p.y,
-                paddedW: p.w,
-                paddedH: p.h,
-                rotatedOnSheet: p.rotatedOnSheet
+                x: placement.x,
+                y: placement.y,
+                paddedW: placement.w,
+                paddedH: placement.h,
+                rotatedOnSheet: placement.rotatedOnSheet,
+                stageName: stageName,
+                placementReason: "backfill"
             });
 
-            freeRects = placeAndUpdateFreeRects(freeRects, p);
-            var bottom = p.y + p.h;
-            if (bottom > usedLength) usedLength = bottom;
-
-            unplaced.splice(idx, 1);
+            current.freeRects = placeAndUpdateFreeRects(current.freeRects, placement);
+            if (placement.y + placement.h > current.usedLength) current.usedLength = placement.y + placement.h;
+            current.unplaced.splice(i, 1);
             improved = true;
             break;
         }
     }
 
+    current.stageName = stageName;
+    return current;
+}
+
+// =====================================================
+// Metrics / validation / scoring
+// =====================================================
+
+function getRequiredPlacedRect(placedBlock, settings) {
+    var spacing = inToPt(settings.spacingIn);
+    var w = placedBlock.rotatedOnSheet ? placedBlock.block.blockH : placedBlock.block.blockW;
+    var h = placedBlock.rotatedOnSheet ? placedBlock.block.blockW : placedBlock.block.blockH;
+    return { x: placedBlock.x, y: placedBlock.y, w: w + spacing, h: h + spacing };
+}
+
+function buildLooseFitCandidates(layoutState, sourcePlanCache) {
+    var out = [];
+    var seenSource = {};
+
+    for (var i = 0; i < layoutState.unplaced.length; i++) {
+        var block = layoutState.unplaced[i];
+        if (seenSource[block.sourceId]) continue;
+        seenSource[block.sourceId] = true;
+
+        var sourceCache = sourcePlanCache.bySource[block.sourceId];
+        if (sourceCache && sourceCache.bestBlockByCount[1]) out.push(sourceCache.bestBlockByCount[1]);
+    }
+
+    return out;
+}
+
+function analyzeWidthUtilizationBands(layoutState, settings) {
+    var bandCount = 4;
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var usedLength = Math.max(layoutState.usedLength, inToPt(settings.spacingIn));
+    var bands = [];
+
+    for (var i = 0; i < bandCount; i++) {
+        var bandTop = (usedLength / bandCount) * i;
+        var bandBottom = (usedLength / bandCount) * (i + 1);
+        var area = 0;
+
+        for (var j = 0; j < layoutState.placed.length; j++) {
+            var p = layoutState.placed[j];
+            var rect = getRequiredPlacedRect(p, settings);
+            var overlapTop = Math.max(rect.y, bandTop);
+            var overlapBottom = Math.min(rect.y + rect.h, bandBottom);
+            if (overlapBottom <= overlapTop + EPS) continue;
+            area += rect.w * (overlapBottom - overlapTop);
+        }
+
+        bands.push(clamp(area / Math.max(sheetWidth * (bandBottom - bandTop), EPS), 0, 1));
+    }
+
+    return bands;
+}
+
+function analyzeFreeRectangles(layoutState, settings, sourcePlanCache) {
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var usedLength = Math.max(layoutState.usedLength, inToPt(settings.spacingIn));
+    var capacityArea = Math.max(sheetWidth * usedLength, EPS);
+    var looseFits = buildLooseFitCandidates(layoutState, sourcePlanCache);
+
+    var largeRectCount = 0;
+    var usableHoleArea = 0;
+    var centralHoleArea = 0;
+    var centralHoleScore = 0;
+    var multiCopyHoleCount = 0;
+    var skinnyFragmentArea = 0;
+    var largestUsableRect = null;
+    var largestCentralRect = null;
+
+    for (var i = 0; i < layoutState.freeRects.length; i++) {
+        var rect = layoutState.freeRects[i];
+        var area = rectArea(rect);
+        var usable = false;
+        var multiCopy = false;
+        var cx = rectCenterX(rect);
+        var cy = rectCenterY(rect);
+
+        if (area >= capacityArea * 0.01) largeRectCount += 1;
+
+        for (var b = 0; b < layoutState.unplaced.length; b++) {
+            if (blockFitsRect(layoutState.unplaced[b], rect, settings)) {
+                usable = true;
+                if (layoutState.unplaced[b].count >= 2 || layoutState.unplaced[b].planKind !== "piece") multiCopy = true;
+                break;
+            }
+        }
+
+        if (!usable) {
+            for (b = 0; b < looseFits.length; b++) {
+                if (blockFitsRect(looseFits[b], rect, settings)) {
+                    usable = true;
+                    if (rect.w >= (looseFits[b].blockW * 2)) multiCopy = true;
+                    break;
+                }
+            }
+        }
+
+        if (rect.w < inToPt(1.0) || rect.h < inToPt(0.7)) skinnyFragmentArea += area;
+
+        var central = (
+            cx >= (sheetWidth * 0.25) &&
+            cx <= (sheetWidth * 0.75) &&
+            cy >= (usedLength * 0.2) &&
+            cy <= (usedLength * 0.8)
+        );
+
+        if (usable) {
+            usableHoleArea += area;
+            if (!largestUsableRect || area > rectArea(largestUsableRect)) largestUsableRect = cloneRect(rect);
+            if (multiCopy) multiCopyHoleCount += 1;
+        }
+
+        if (central && usable) {
+            centralHoleArea += area;
+            centralHoleScore += (area / capacityArea) * 100;
+            if (!largestCentralRect || area > rectArea(largestCentralRect)) largestCentralRect = cloneRect(rect);
+        }
+    }
+
     return {
-        placed: placed,
-        unplaced: unplaced,
-        usedLength: usedLength,
-        freeRects: freeRects,
-        meta: layout.meta
+        largeRectCount: largeRectCount,
+        usableHoleArea: usableHoleArea,
+        centralHoleArea: centralHoleArea,
+        centralHoleScore: centralHoleScore,
+        multiCopyHoleCount: multiCopyHoleCount,
+        skinnyFragmentArea: skinnyFragmentArea,
+        largestUsableRect: largestUsableRect,
+        largestCentralRect: largestCentralRect,
+        widthUtilizationBands: analyzeWidthUtilizationBands(layoutState, settings)
     };
 }
 
@@ -1312,535 +1651,801 @@ function sortPlacedReadingOrder(list) {
     list.sort(function(a, b) {
         if (Math.abs(a.y - b.y) > EPS) return a.y - b.y;
         if (Math.abs(a.x - b.x) > EPS) return a.x - b.x;
-        var aArea = a.paddedW * a.paddedH;
-        var bArea = b.paddedW * b.paddedH;
-        return aArea - bArea;
+        return compareStrings(a.block.sourceName, b.block.sourceName);
     });
 }
 
-function rebuildLayoutFromPlaced(placed, unplaced, settings, meta) {
+function evaluateSanityMetrics(layoutState, settings, sourcePlanCache) {
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var usedLength = Math.max(layoutState.usedLength, EPS);
+    var usedArea = 0;
+    var reading = clonePlacedList(layoutState.placed || []);
+    var sourceSwitches = 0;
+    var sourceFragments = {};
+    var prevSource = null;
+    var holeMetrics = analyzeFreeRectangles(layoutState, settings, sourcePlanCache);
+
+    sortPlacedReadingOrder(reading);
+
+    for (var i = 0; i < reading.length; i++) {
+        usedArea += reading[i].block.area;
+        if (prevSource !== null && prevSource !== reading[i].block.sourceId) sourceSwitches += 1;
+        if (!sourceFragments[reading[i].block.sourceId]) sourceFragments[reading[i].block.sourceId] = 0;
+        if (prevSource !== reading[i].block.sourceId) sourceFragments[reading[i].block.sourceId] += 1;
+        prevSource = reading[i].block.sourceId;
+    }
+
+    var fragmentCount = 0;
+    for (var key in sourceFragments) {
+        if (sourceFragments.hasOwnProperty(key)) fragmentCount += sourceFragments[key];
+    }
+
+    var utilization = clamp(usedArea / Math.max(sheetWidth * usedLength, EPS), 0, 1);
+    var bands = holeMetrics.widthUtilizationBands;
+    var bandAvg = 0;
+    var bandVariance = 0;
+    for (i = 0; i < bands.length; i++) bandAvg += bands[i];
+    bandAvg = bandAvg / Math.max(bands.length, 1);
+    for (i = 0; i < bands.length; i++) bandVariance += Math.abs(bands[i] - bandAvg);
+
+    var largestCentralRectArea = holeMetrics.largestCentralRect ? rectArea(holeMetrics.largestCentralRect) : 0;
+    var capacityArea = Math.max(sheetWidth * usedLength, EPS);
+
+    return {
+        unplacedCopies: countUnplacedCopies(layoutState),
+        usedLength: usedLength,
+        utilization: utilization,
+        largestCentralCavityRatio: largestCentralRectArea / capacityArea,
+        usableHoleAreaRatio: holeMetrics.usableHoleArea / capacityArea,
+        fragmentationScore: ((layoutState.freeRects.length * 0.04) + (holeMetrics.skinnyFragmentArea / capacityArea)),
+        sourceFragmentationScore: ((sourceSwitches * 0.08) + (fragmentCount * 0.05)),
+        denseRegionGapScore: ((holeMetrics.centralHoleScore * 0.01) + (bandVariance * 0.6)),
+        widthWasteScore: (1 - utilization),
+        sourceSwitches: sourceSwitches,
+        sourceFragments: fragmentCount,
+        holeMetrics: holeMetrics
+    };
+}
+
+function validateLayoutState(layoutState, settings) {
+    var valid = true;
+    var reasons = [];
     var sheetWidth = inToPt(settings.sheetWidthIn);
     var maxLength = inToPt(settings.maxLengthIn);
-    var sortedPlaced = clonePlacedList(placed || []);
-    var freeRects = [{ x: 0, y: 0, w: sheetWidth, h: maxLength }];
-    var usedLength = 0;
+    var requiredRects = [];
 
-    sortPlacedReadingOrder(sortedPlaced);
+    for (var i = 0; i < layoutState.placed.length; i++) {
+        var p = layoutState.placed[i];
+        var req = getRequiredPlacedRect(p, settings);
+        requiredRects.push(req);
 
-    for (var i = 0; i < sortedPlaced.length; i++) {
-        var p = sortedPlaced[i];
-        freeRects = placeAndUpdateFreeRects(freeRects, {
-            x: p.x,
-            y: p.y,
-            w: p.paddedW,
-            h: p.paddedH
-        });
-
-        var bottom = p.y + p.paddedH;
-        if (bottom > usedLength) usedLength = bottom;
-    }
-
-    return {
-        placed: sortedPlaced,
-        unplaced: unplaced ? unplaced.slice(0) : [],
-        usedLength: usedLength,
-        freeRects: freeRects,
-        meta: meta
-    };
-}
-
-function buildSourceRecordFromBlock(block) {
-    return {
-        id: block.sourceId,
-        key: block.sourceKey,
-        ref: block.sourceRef,
-        name: block.sourceName,
-        baseQty: block.sourceBaseQty,
-        qty: block.sourceQty,
-        width: block.sourceWidth,
-        height: block.sourceHeight,
-        area: block.sourceArea,
-        longSide: block.sourceLongSide,
-        shortSide: block.sourceShortSide
-    };
-}
-
-function buildSingleSourceOrderVariants(blocks, settings) {
-    var variants = buildBlockOrderVariants(blocks, settings);
-
-    var smallFirst = cloneBlockOrder(blocks);
-    smallFirst.sort(function(a, b) {
-        if (a.count !== b.count) return a.count - b.count;
-        if (a.area !== b.area) return a.area - b.area;
-        return a.blockW - b.blockW;
-    });
-    variants.push(smallFirst);
-
-    var largeFirst = cloneBlockOrder(blocks);
-    largeFirst.sort(function(a, b) {
-        if (b.count !== a.count) return b.count - a.count;
-        if (b.area !== a.area) return b.area - a.area;
-        return b.blockW - a.blockW;
-    });
-    variants.push(largeFirst);
-
-    return variants;
-}
-
-function tryRepackSingleSource(layout, settings, sourceId) {
-    var fixedPlaced = [];
-    var sampleBlock = null;
-
-    for (var i = 0; i < layout.placed.length; i++) {
-        var p = layout.placed[i];
-        if (p.block.sourceId === sourceId) {
-            if (!sampleBlock) sampleBlock = p.block;
-        } else {
-            fixedPlaced.push(p);
+        if (req.x < -EPS || req.y < -EPS) {
+            valid = false;
+            reasons.push("Negative placement bounds");
+            break;
+        }
+        if (req.x + req.w > sheetWidth + EPS) {
+            valid = false;
+            reasons.push("Sheet width exceeded");
+            break;
+        }
+        if (req.y + req.h > maxLength + EPS) {
+            valid = false;
+            reasons.push("Sheet length exceeded");
+            break;
+        }
+        if (p.paddedW + EPS < req.w || p.paddedH + EPS < req.h) {
+            valid = false;
+            reasons.push("Configured spacing lost");
+            break;
         }
     }
 
-    if (!sampleBlock) return null;
-
-    var src = buildSourceRecordFromBlock(sampleBlock);
-    var candidatePlans = buildCandidateBlockPlansForSource(src, settings, sampleBlock.isDominant);
-    if (!candidatePlans || candidatePlans.length === 0) return null;
-
-    var base = rebuildLayoutFromPlaced(fixedPlaced, layout.unplaced, settings, layout.meta);
-    var bestLayout = null;
-    var bestScore = null;
-
-    for (var pIdx = 0; pIdx < candidatePlans.length; pIdx++) {
-        var plan = candidatePlans[pIdx];
-        var candidateBlocksInfo = materializeBlocksFromPlans([plan], settings, null, []);
-        var planBlocks = candidateBlocksInfo.blocks;
-        var variants = buildSingleSourceOrderVariants(planBlocks, settings);
-
-        for (var v = 0; v < variants.length; v++) {
-            var order = cloneBlockOrder(variants[v]);
-            var placed = clonePlacedList(fixedPlaced);
-            var freeRects = cloneFreeRectList(base.freeRects);
-            var usedLength = base.usedLength;
-            var failed = false;
-
-            for (var i2 = 0; i2 < order.length; i2++) {
-                var block = order[i2];
-                var remainingBlocks = order.slice(i2 + 1);
-                var placement = findBestBlockPlacement(block, freeRects, usedLength, settings, placed, remainingBlocks);
-                if (!placement) {
-                    failed = true;
+    if (valid) {
+        for (var a = 0; a < requiredRects.length; a++) {
+            for (var b = a + 1; b < requiredRects.length; b++) {
+                if (intersects(requiredRects[a], requiredRects[b])) {
+                    valid = false;
+                    reasons.push("Placed blocks overlap");
                     break;
                 }
-
-                placed.push({
-                    block: block,
-                    x: placement.x,
-                    y: placement.y,
-                    paddedW: placement.w,
-                    paddedH: placement.h,
-                    rotatedOnSheet: placement.rotatedOnSheet
-                });
-
-                freeRects = placeAndUpdateFreeRects(freeRects, placement);
-                var bottom = placement.y + placement.h;
-                if (bottom > usedLength) usedLength = bottom;
             }
-
-            if (failed) continue;
-
-            var candidate = rebuildLayoutFromPlaced(placed, layout.unplaced, settings, layout.meta);
-            if (!isLayoutSpacingValid(candidate, settings)) continue;
-
-            var score = scoreLayout(candidate, settings);
-            if (!bestScore || score.total < bestScore.total) {
-                bestLayout = candidate;
-                bestScore = score;
-            }
+            if (!valid) break;
         }
     }
 
-    return bestLayout;
+    return { valid: valid, reasons: reasons, hardReject: !valid };
 }
 
-function optimizeSourceRepack(layout, settings) {
-    if (!layout || !layout.placed || layout.placed.length < 2) return layout;
+function scoreCandidateLayout(layoutState, settings, personality) {
+    var sanity = layoutState.metrics ? layoutState.metrics.sanity : null;
+    var usedNoTrailingGap = Math.max(0, layoutState.usedLength - inToPt(settings.spacingIn));
+    var utilization = sanity ? sanity.utilization : 0;
+    var unplacedPenalty = sanity ? sanity.unplacedCopies : countUnplacedCopies(layoutState);
+    var lengthPenalty = Math.round(usedNoTrailingGap * 1000);
+    var utilizationPenalty = Math.round((1 - utilization) * 100000);
+    var cavityPenalty = sanity
+        ? Math.round(
+            (sanity.largestCentralCavityRatio * 100000) +
+            (sanity.usableHoleAreaRatio * 50000) +
+            (sanity.denseRegionGapScore * 12000)
+        )
+        : 0;
+    var continuityPenalty = sanity ? Math.round(sanity.sourceFragmentationScore * 12000) : 0;
+    var fragmentationPenalty = sanity ? Math.round((sanity.fragmentationScore * 12000) + (sanity.widthWasteScore * 6000)) : 0;
+    var bonuses = (personality && personality.name === "Ordered") ? 50 : 0;
 
-    var current = rebuildLayoutFromPlaced(layout.placed, layout.unplaced, settings, layout.meta);
-    var currentScore = scoreLayout(current, settings);
-    var sourceCounts = {};
-    var sourceIds = [];
-    var passes = (settings.searchEffort === "High") ? 3 : 2;
+    var total =
+        (unplacedPenalty * 1000000000000) +
+        (lengthPenalty * 1000000) +
+        (utilizationPenalty * 1000) +
+        (cavityPenalty * 10) +
+        continuityPenalty +
+        fragmentationPenalty -
+        bonuses;
 
-    for (var i = 0; i < current.placed.length; i++) {
-        var sourceId = current.placed[i].block.sourceId;
-        if (!sourceCounts[sourceId]) {
-            sourceCounts[sourceId] = 0;
-            sourceIds.push(sourceId);
+    return {
+        total: total,
+        unplacedPenalty: unplacedPenalty,
+        lengthPenalty: lengthPenalty,
+        utilizationPenalty: utilizationPenalty,
+        cavityPenalty: cavityPenalty,
+        continuityPenalty: continuityPenalty,
+        fragmentationPenalty: fragmentationPenalty,
+        bonuses: bonuses,
+        rankTuple: [
+            unplacedPenalty,
+            lengthPenalty,
+            utilizationPenalty,
+            cavityPenalty,
+            continuityPenalty,
+            fragmentationPenalty
+        ],
+        usedNoTrailingGap: usedNoTrailingGap,
+        utilization: utilization
+    };
+}
+
+function decorateLayoutState(layoutState, settings, sourcePlanCache, personality) {
+    layoutState.validation = validateLayoutState(layoutState, settings);
+    layoutState.metrics = { sanity: evaluateSanityMetrics(layoutState, settings, sourcePlanCache) };
+    layoutState.score = scoreCandidateLayout(layoutState, settings, personality);
+    return layoutState;
+}
+
+function compareScoreObjects(a, b) {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    if (a.total < b.total) return -1;
+    if (a.total > b.total) return 1;
+    return 0;
+}
+
+// =====================================================
+// Split fallback helpers
+// =====================================================
+
+function buildFallbackPartitions(count, splitAggressiveness) {
+    var out = [];
+    if (count <= 1) return out;
+
+    uniquePushPartition(out, [Math.ceil(count / 2), Math.floor(count / 2)]);
+
+    if (count >= 4) {
+        var thirds = [];
+        var thirdSize = Math.ceil(count / 3);
+        var remaining = count;
+        while (remaining > 0) {
+            thirds.push(Math.min(thirdSize, remaining));
+            remaining -= Math.min(thirdSize, remaining);
         }
-        sourceCounts[sourceId] += 1;
+        thirds.sort(sortNumericDesc);
+        uniquePushPartition(out, thirds);
     }
 
-    sourceIds.sort(function(a, b) {
-        return sourceCounts[b] - sourceCounts[a];
+    if (count >= 6 || splitAggressiveness >= 70) {
+        var quarterSize = Math.max(1, Math.ceil(count / 4));
+        var quarters = [];
+        remaining = count;
+        while (remaining > 0) {
+            quarters.push(Math.min(quarterSize, remaining));
+            remaining -= Math.min(quarterSize, remaining);
+        }
+        quarters.sort(sortNumericDesc);
+        uniquePushPartition(out, quarters);
+    }
+
+    if (count >= 8 && splitAggressiveness >= 80) {
+        var equalTwo = [];
+        for (var i = 0; i < count; i += 2) equalTwo.push(Math.min(2, count - i));
+        equalTwo.sort(sortNumericDesc);
+        uniquePushPartition(out, equalTwo);
+    }
+
+    var loose = [];
+    for (i = 0; i < count; i++) loose.push(1);
+    uniquePushPartition(out, loose);
+
+    return out;
+}
+
+function splitBlockIntoFallbackOptions(block, sourcePlanCache, personality) {
+    var sourceCache = sourcePlanCache.bySource[block.sourceId];
+    if (!sourceCache) return [];
+
+    var partitions = buildFallbackPartitions(block.count, personality.splitAggressiveness);
+    var options = [];
+    var seen = {};
+
+    for (var p = 0; p < partitions.length; p++) {
+        var partition = partitions[p];
+        var blocks = [];
+        var valid = true;
+
+        for (var i = 0; i < partition.length; i++) {
+            var template = sourceCache.bestBlockByCount[partition[i]];
+            if (!template) {
+                valid = false;
+                break;
+            }
+            blocks.push(instantiateBlockFromTemplate(template));
+        }
+
+        if (!valid) continue;
+
+        var key = partition.join("+");
+        if (seen[key]) continue;
+        seen[key] = true;
+
+        options.push({
+            label: "split:" + key,
+            partition: partition,
+            blocks: blocks
+        });
+    }
+
+    return options;
+}
+
+function removeBlockByUid(blocks, uid) {
+    var out = [];
+    for (var i = 0; i < blocks.length; i++) {
+        if (blocks[i].uid !== uid) out.push(blocks[i]);
+    }
+    return out;
+}
+
+function applyReplacementOption(baseState, targetBlock, replacementOption, settings, personality, effortConfig, stageName, preferredRect) {
+    var state = cloneLayoutState(baseState);
+    var replacementBlocks = cloneArray(replacementOption.blocks);
+    var pendingUnplaced = removeBlockByUid(state.unplaced, targetBlock.uid);
+    var firstPlaced = false;
+
+    replacementBlocks.sort(function(a, b) {
+        if (preferredRect) {
+            var fitA = blockFitsRect(a, preferredRect, settings) ? 1 : 0;
+            var fitB = blockFitsRect(b, preferredRect, settings) ? 1 : 0;
+            if (fitA !== fitB) return fitB - fitA;
+        }
+        if (a.count !== b.count) return a.count - b.count;
+        return a.area - b.area;
     });
 
-    for (var pass = 0; pass < passes; pass++) {
+    for (var i = 0; i < replacementBlocks.length; i++) {
+        var block = replacementBlocks[i];
+        var remaining = replacementBlocks.slice(i + 1).concat(pendingUnplaced);
+        var placement = findBestPlacementForBlock(
+            block,
+            state.freeRects,
+            state.usedLength,
+            state.placed,
+            settings,
+            personality,
+            effortConfig,
+            remaining,
+            (!firstPlaced && preferredRect) ? preferredRect : null
+        );
+
+        if (!placement) {
+            pendingUnplaced.push(block);
+            continue;
+        }
+
+        firstPlaced = true;
+        state.placed.push({
+            block: block,
+            x: placement.x,
+            y: placement.y,
+            paddedW: placement.w,
+            paddedH: placement.h,
+            rotatedOnSheet: placement.rotatedOnSheet,
+            stageName: stageName,
+            placementReason: replacementOption.label
+        });
+        state.freeRects = placeAndUpdateFreeRects(state.freeRects, placement);
+        if (placement.y + placement.h > state.usedLength) state.usedLength = placement.y + placement.h;
+    }
+
+    state.unplaced = pendingUnplaced;
+    state.stageName = stageName;
+    return state;
+}
+
+// =====================================================
+// Solver stages
+// =====================================================
+
+function runPrimaryBlockLayout(candidatePlan, personality, effortConfig, settings, sourcePlanData, debugRoot) {
+    var blocks = materializeBlocksFromSelectedPlans(candidatePlan, sourcePlanData);
+    var variants = buildBlockOrderVariants(blocks, personality, effortConfig, "primary");
+    var best = null;
+    var variantSummary = [];
+
+    for (var i = 0; i < variants.length; i++) {
+        var variant = variants[i];
+        var nested = nestBlocksByOrder(variant.order, personality.strategyName, "primary", settings, personality, effortConfig);
+        nested = runBasicBackfill(nested, settings, personality, effortConfig, "primaryBackfill");
+        nested.debug = debugRoot;
+        decorateLayoutState(nested, settings, sourcePlanData, personality);
+
+        variantSummary.push({
+            label: variant.label,
+            placedCopies: countPlacedCopies(nested),
+            unplacedCopies: countUnplacedCopies(nested),
+            totalScore: nested.score.total
+        });
+
+        if (!best || compareScoreObjects(nested.score, best.score) < 0) best = nested;
+    }
+
+    debugRoot.blockOrderVariantsConsidered = variantSummary;
+    best.strategyName = personality.strategyName;
+    return best;
+}
+
+function repackAllBlocks(layoutState, personality, effortConfig, settings, sourcePlanData, mode, debugRoot) {
+    var allBlocks = [];
+    var i;
+
+    for (i = 0; i < layoutState.placed.length; i++) allBlocks.push(layoutState.placed[i].block);
+    for (i = 0; i < layoutState.unplaced.length; i++) allBlocks.push(layoutState.unplaced[i]);
+
+    var variants = buildBlockOrderVariants(allBlocks, personality, effortConfig, mode);
+    var best = decorateLayoutState(cloneLayoutState(layoutState), settings, sourcePlanData, personality);
+
+    for (i = 0; i < variants.length; i++) {
+        var variant = variants[i];
+        var nested = nestBlocksByOrder(variant.order, personality.strategyName, mode, settings, personality, effortConfig);
+        nested = runBasicBackfill(nested, settings, personality, effortConfig, mode + "Backfill");
+        decorateLayoutState(nested, settings, sourcePlanData, personality);
+        if (compareScoreObjects(nested.score, best.score) < 0) best = nested;
+    }
+
+    best.debug = debugRoot;
+    best.strategyName = personality.strategyName;
+    best.stageName = mode;
+    return best;
+}
+
+function runCompactionPass(layoutState, personality, effortConfig, settings, sourcePlanData, debugRoot) {
+    var current = decorateLayoutState(cloneLayoutState(layoutState), settings, sourcePlanData, personality);
+    var accepted = 0;
+
+    for (var pass = 0; pass < effortConfig.compactionPasses; pass++) {
+        var candidate = repackAllBlocks(current, personality, effortConfig, settings, sourcePlanData, "compaction", debugRoot);
+        if (compareScoreObjects(candidate.score, current.score) < 0) {
+            current = candidate;
+            accepted += 1;
+        } else {
+            break;
+        }
+    }
+
+    debugRoot.compactionStats = { passes: effortConfig.compactionPasses, accepted: accepted };
+    current.stageName = "compaction";
+    return current;
+}
+
+function runAdaptiveBlockSplittingPass(layoutState, sourcePlanCache, personality, effortConfig, settings, debugRoot) {
+    var current = decorateLayoutState(cloneLayoutState(layoutState), settings, sourcePlanCache, personality);
+    var stats = { attempted: 0, accepted: 0, blocksSplit: 0, copiesRecovered: 0 };
+
+    if (personality.baselineLike || personality.splitAggressiveness <= 0) {
+        debugRoot.splitStats = stats;
+        return current;
+    }
+
+    for (var pass = 0; pass < effortConfig.splitPasses; pass++) {
         var improved = false;
 
-        for (var s = 0; s < sourceIds.length; s++) {
-            var sid = sourceIds[s];
-            if (sourceCounts[sid] < 2) continue;
+        current.unplaced.sort(function(a, b) {
+            if (b.count !== a.count) return b.count - a.count;
+            if (b.area !== a.area) return b.area - a.area;
+            return compareStrings(a.sourceName, b.sourceName);
+        });
 
-            var candidate = tryRepackSingleSource(current, settings, sid);
-            if (!candidate) continue;
+        for (var i = 0; i < current.unplaced.length; i++) {
+            var target = current.unplaced[i];
+            if (target.count <= 1) continue;
 
-            var candidateScore = scoreLayout(candidate, settings);
-            var betterByLength = candidateScore.usedNoTrailingGap < (currentScore.usedNoTrailingGap - EPS);
-            var tieOnLength = Math.abs(candidateScore.usedNoTrailingGap - currentScore.usedNoTrailingGap) <= EPS;
-            var betterByUtil = tieOnLength && (candidateScore.utilization > currentScore.utilization + 1e-6);
-            var betterByTotal = candidateScore.total < (currentScore.total - 1e-3);
+            var options = splitBlockIntoFallbackOptions(target, sourcePlanCache, personality);
+            for (var o = 0; o < options.length; o++) {
+                stats.attempted += 1;
+                var candidate = applyReplacementOption(current, target, options[o], settings, personality, effortConfig, "adaptiveSplit", null);
+                decorateLayoutState(candidate, settings, sourcePlanCache, personality);
 
-            if (betterByLength || betterByUtil || betterByTotal) {
-                current = candidate;
-                currentScore = candidateScore;
-                improved = true;
+                if (candidate.validation.hardReject) continue;
+                if (compareScoreObjects(candidate.score, current.score) < 0) {
+                    stats.accepted += 1;
+                    stats.blocksSplit += 1;
+                    stats.copiesRecovered += Math.max(0, countPlacedCopies(candidate) - countPlacedCopies(current));
+                    current = candidate;
+                    improved = true;
+                    break;
+                }
             }
+
+            if (improved) break;
         }
 
         if (!improved) break;
     }
 
-    current.meta = layout.meta;
+    debugRoot.splitStats = stats;
+    current.stageName = "adaptiveSplit";
     return current;
 }
 
-function getRequiredPlacedRect(placedBlock, settings) {
-    var spacing = inToPt(settings.spacingIn);
-    var w = placedBlock.rotatedOnSheet ? placedBlock.block.blockH : placedBlock.block.blockW;
-    var h = placedBlock.rotatedOnSheet ? placedBlock.block.blockW : placedBlock.block.blockH;
-    return {
-        x: placedBlock.x,
-        y: placedBlock.y,
-        w: w + spacing,
-        h: h + spacing
-    };
-}
-
-function isLayoutSpacingValid(layout, settings) {
-    if (!layout || !layout.placed) return true;
-
-    var requiredRects = [];
-    for (var i = 0; i < layout.placed.length; i++) {
-        var p = layout.placed[i];
-        var req = getRequiredPlacedRect(p, settings);
-
-        // Guard: no placement may use less than configured spacing.
-        if (p.paddedW + EPS < req.w || p.paddedH + EPS < req.h) return false;
-        requiredRects.push(req);
-    }
-
-    for (var a = 0; a < requiredRects.length; a++) {
-        for (var b = a + 1; b < requiredRects.length; b++) {
-            if (intersects(requiredRects[a], requiredRects[b])) return false;
-        }
-    }
-
-    return true;
-}
-
-function cloneBlockOrder(blocks) {
-    var out = [];
-    for (var i = 0; i < blocks.length; i++) out.push(blocks[i]);
-    return out;
-}
-
-function buildBlockOrderVariants(blocks, settings) {
-    var variants = [];
-    var orderRaw = parseFloat(settings.orderDiscipline);
-    if (isNaN(orderRaw)) orderRaw = DEFAULTS.orderDiscipline;
-    var orderBias = clamp(orderRaw, 0, 100) / 100.0;
-
-    var base = cloneBlockOrder(blocks);
-    variants.push(base);
-
-    var vWidthFirst = cloneBlockOrder(blocks);
-    vWidthFirst.sort(function(a, b) {
-        if (a.isDominant !== b.isDominant) return a.isDominant ? -1 : 1;
-        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-        if (a.blockH !== b.blockH) return a.blockH - b.blockH;
-        return b.area - a.area;
-    });
-    variants.push(vWidthFirst);
-
-    var vHeightFirst = cloneBlockOrder(blocks);
-    vHeightFirst.sort(function(a, b) {
-        if (a.isDominant !== b.isDominant) return a.isDominant ? -1 : 1;
-        if (a.blockH !== b.blockH) return a.blockH - b.blockH;
-        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-        return b.area - a.area;
-    });
-    variants.push(vHeightFirst);
-
-    var vMinorityFirst = cloneBlockOrder(blocks);
-    vMinorityFirst.sort(function(a, b) {
-        if (a.isDominant !== b.isDominant) return a.isDominant ? 1 : -1;
-        if (b.longSide !== a.longSide) return b.longSide - a.longSide;
-        return b.area - a.area;
-    });
-    variants.push(vMinorityFirst);
-
-    var dominant = [];
-    var minority = [];
-    for (var i = 0; i < blocks.length; i++) {
-        if (blocks[i].isDominant) dominant.push(blocks[i]);
-        else minority.push(blocks[i]);
-    }
-    dominant.sort(function(a, b) {
-        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-        return a.blockH - b.blockH;
-    });
-    minority.sort(function(a, b) {
-        if (b.longSide !== a.longSide) return b.longSide - a.longSide;
-        return b.area - a.area;
-    });
-
-    var vInterleave = [];
-    var maxLen = Math.max(dominant.length, minority.length);
-    for (var j = 0; j < maxLen; j++) {
-        if (j < dominant.length) vInterleave.push(dominant[j]);
-        if (j < minority.length) vInterleave.push(minority[j]);
-    }
-    if (vInterleave.length > 0) variants.push(vInterleave);
-
-    if (orderBias > 0.4) {
-        var vGrouped = cloneBlockOrder(blocks);
-        vGrouped.sort(function(a, b) {
-            if (a.sourceName < b.sourceName) return -1;
-            if (a.sourceName > b.sourceName) return 1;
-            if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-            return a.blockH - b.blockH;
-        });
-        variants.push(vGrouped);
-    }
-
-    return variants;
-}
-function scoreLayout(layout, settings) {
+function buildPrioritizedHoles(layoutState, settings, sourcePlanCache) {
+    var holeInfo = analyzeFreeRectangles(layoutState, settings, sourcePlanCache);
+    var holes = [];
     var sheetWidth = inToPt(settings.sheetWidthIn);
-    var usedNoTrailingGap = Math.max(0, layout.usedLength - inToPt(settings.spacingIn));
-    var usedArea = 0;
-    var sourceSwitches = 0;
-    var prevSource = null;
-    var i;
+    var usedLength = Math.max(layoutState.usedLength, EPS);
 
-    for (i = 0; i < layout.placed.length; i++) {
-        var p = layout.placed[i];
-        usedArea += p.block.area;
-        if (prevSource !== null && prevSource !== p.block.sourceId) sourceSwitches += 1;
-        prevSource = p.block.sourceId;
+    for (var i = 0; i < layoutState.freeRects.length; i++) {
+        var rect = layoutState.freeRects[i];
+        var area = rectArea(rect);
+        var cx = rectCenterX(rect);
+        var cy = rectCenterY(rect);
+        var dx = Math.abs(cx - (sheetWidth / 2)) / Math.max(sheetWidth / 2, EPS);
+        var dy = Math.abs(cy - (usedLength / 2)) / Math.max(usedLength / 2, EPS);
+        var centrality = 1 - clamp((dx + dy) / 2, 0, 1);
+
+        holes.push({
+            rect: rect,
+            area: area,
+            centrality: centrality,
+            fitValue: area * (0.55 + (0.45 * centrality))
+        });
     }
 
-    var placedCopyCount = countPlacedCopies(layout);
-    var unplacedCopyCount = countUnplacedCopies(layout);
-    var capacityArea = sheetWidth * Math.max(layout.usedLength, EPS);
-    var utilization = (capacityArea > EPS) ? (usedArea / capacityArea) : 0;
-    utilization = clamp(utilization, 0, 1);
+    holes.sort(function(a, b) {
+        if (b.fitValue !== a.fitValue) return b.fitValue - a.fitValue;
+        return b.area - a.area;
+    });
 
-    var orderRaw = parseFloat(settings.orderDiscipline);
-    if (isNaN(orderRaw)) orderRaw = DEFAULTS.orderDiscipline;
-    var orderBias = clamp(orderRaw, 0, 100) / 100.0;
+    return { holes: holes, metrics: holeInfo };
+}
 
-    // Strong lexicographic-style objective in one scalar:
-    // unplaced copies >> used length >> width utilization >> ordering switches.
+function runHoleFillingPass(layoutState, sourcePlanCache, personality, effortConfig, settings, debugRoot) {
+    var current = decorateLayoutState(cloneLayoutState(layoutState), settings, sourcePlanCache, personality);
+    var stats = {
+        holesAnalyzed: 0,
+        attempted: 0,
+        accepted: 0,
+        filledCopies: 0,
+        acceptedReasons: []
+    };
+
+    if (personality.baselineLike || personality.holeFillAggressiveness <= 0) {
+        debugRoot.holeFillStats = stats;
+        return current;
+    }
+
+    var loopGuard = 0;
+    while (loopGuard < effortConfig.holeScanLimit) {
+        loopGuard += 1;
+        var holeInfo = buildPrioritizedHoles(current, settings, sourcePlanCache);
+        var holes = holeInfo.holes;
+        var improved = false;
+
+        for (var h = 0; h < holes.length && h < effortConfig.holeScanLimit; h++) {
+            var hole = holes[h];
+            stats.holesAnalyzed += 1;
+
+            for (var u = 0; u < current.unplaced.length; u++) {
+                var target = current.unplaced[u];
+                var options = splitBlockIntoFallbackOptions(target, sourcePlanCache, personality);
+                var tries = 0;
+
+                for (var o = 0; o < options.length; o++) {
+                    if (tries >= effortConfig.holeAttemptsPerHole) break;
+                    tries += 1;
+                    stats.attempted += 1;
+
+                    var candidate = applyReplacementOption(current, target, options[o], settings, personality, effortConfig, "holeFill", hole.rect);
+                    decorateLayoutState(candidate, settings, sourcePlanCache, personality);
+                    if (candidate.validation.hardReject) continue;
+
+                    var placedGain = countPlacedCopies(candidate) - countPlacedCopies(current);
+                    var oldCentral = current.metrics.sanity.largestCentralCavityRatio;
+                    var newCentral = candidate.metrics.sanity.largestCentralCavityRatio;
+                    var centralImproved = newCentral <= oldCentral + 1e-6;
+
+                    if (placedGain > 0 || (centralImproved && compareScoreObjects(candidate.score, current.score) < 0)) {
+                        stats.accepted += 1;
+                        stats.filledCopies += Math.max(0, placedGain);
+                        stats.acceptedReasons.push(options[o].label + "@" + Math.round(hole.area));
+                        current = candidate;
+                        improved = true;
+                        break;
+                    }
+                }
+
+                if (improved) break;
+            }
+
+            if (improved) break;
+        }
+
+        if (!improved) break;
+    }
+
+    debugRoot.holeFillStats = stats;
+    current.stageName = "holeFill";
+    return current;
+}
+
+function runLocalRepairPass(layoutState, sourcePlanCache, personality, effortConfig, settings, debugRoot) {
+    var current = decorateLayoutState(cloneLayoutState(layoutState), settings, sourcePlanCache, personality);
+    var accepted = 0;
+
+    for (var sweep = 0; sweep < effortConfig.repairSweeps; sweep++) {
+        var candidate = repackAllBlocks(current, personality, effortConfig, settings, sourcePlanCache, "repair", debugRoot);
+        if (compareScoreObjects(candidate.score, current.score) < 0) {
+            current = candidate;
+            accepted += 1;
+        } else {
+            break;
+        }
+    }
+
+    debugRoot.localRepairStats = { sweeps: effortConfig.repairSweeps, accepted: accepted };
+    current.stageName = "localRepair";
+    return current;
+}
+
+// =====================================================
+// Candidate solving
+// =====================================================
+
+function buildStageRecord(label, layoutState) {
     return {
-        total:
-            (unplacedCopyCount * 1000000000) +
-            (usedNoTrailingGap * 10000) +
-            ((1 - utilization) * 120000) +
-            (sourceSwitches * orderBias * 3000),
-        usedNoTrailingGap: usedNoTrailingGap,
-        utilization: utilization,
-        placedCopyCount: placedCopyCount,
-        unplacedCopyCount: unplacedCopyCount,
-        sourceSwitches: sourceSwitches
+        stage: label,
+        placedCopies: countPlacedCopies(layoutState),
+        unplacedCopies: countUnplacedCopies(layoutState),
+        usedLengthIn: parseFloat(inToStr(layoutState.usedLength)),
+        totalScore: layoutState.score ? layoutState.score.total : null,
+        validation: layoutState.validation ? layoutState.validation.valid : null
     };
 }
 
-function prioritizeUnplaced(order, layout) {
-    if (!layout || !layout.unplaced || layout.unplaced.length === 0) return cloneBlockOrder(order);
-
-    var map = {};
-    var i;
-    for (i = 0; i < layout.unplaced.length; i++) {
-        map[layout.unplaced[i].uid] = true;
-    }
-
-    var front = [];
-    var back = [];
-    for (i = 0; i < order.length; i++) {
-        if (map[order[i].uid]) front.push(order[i]);
-        else back.push(order[i]);
-    }
-    return front.concat(back);
+function buildDebugRoot(strategy, effortConfig) {
+    return {
+        requestedPreset: strategy.presetName,
+        selectedPresetPersonality: strategy.personalityName,
+        selectedSearchEffort: effortConfig.name,
+        strategyName: strategy.personality.strategyName,
+        isBaseline: strategy.isBaseline,
+        sourcePlanSummary: [],
+        globalCandidatePlanSets: [],
+        blockOrderVariantsConsidered: [],
+        stageRecords: [],
+        splitStats: null,
+        holeFillStats: null,
+        localRepairStats: null,
+        compactionStats: null,
+        rejectedReasons: []
+    };
 }
 
-function perturbOrder(order, seed) {
-    var out = cloneBlockOrder(order);
-    if (out.length < 3) return out;
+function solveBaselineLayout(sources, settings, strategy, effortConfig) {
+    var personality = strategy.personality;
+    var debugRoot = buildDebugRoot(strategy, effortConfig);
+    var sourcePlanData = generateSourceBlockPlans(sources, personality, effortConfig, settings, debugRoot);
+    var planSets = buildGlobalCandidatePlanSets(sourcePlanData, personality, effortConfig, settings, debugRoot);
 
-    var a = seed % out.length;
-    var b = (seed * 7 + 3) % out.length;
-    if (a === b) b = (b + 1) % out.length;
+    if (planSets.length === 0) throw new Error("No valid baseline block plans could be built.");
 
-    var temp = out[a];
-    out[a] = out[b];
-    out[b] = temp;
+    var baselinePlan = planSets[0];
+    var blocks = materializeBlocksFromSelectedPlans(baselinePlan, sourcePlanData);
+    var order = buildBlockOrderVariants(blocks, personality, effortConfig, "baseline")[0];
+    var layoutState = nestBlocksByOrder(order.order, personality.strategyName, "baseline", settings, personality, effortConfig);
+    layoutState = runBasicBackfill(layoutState, settings, personality, effortConfig, "baselineBackfill");
+    layoutState.debug = debugRoot;
+    decorateLayoutState(layoutState, settings, sourcePlanData, personality);
 
-    return out;
+    debugRoot.stageRecords.push(buildStageRecord("baseline", layoutState));
+
+    return {
+        layoutState: layoutState,
+        sourcePlanData: sourcePlanData,
+        debugRoot: debugRoot,
+        personality: personality,
+        strategyName: personality.strategyName,
+        presetName: strategy.presetName,
+        personalityName: strategy.personalityName
+    };
 }
 
-function orderSignature(order) {
-    var ids = [];
-    for (var i = 0; i < order.length; i++) ids.push(order[i].uid);
-    return ids.join("|");
-}
+function solveSmartStrategy(sources, settings, strategy, effortConfig) {
+    var personality = strategy.personality;
+    var debugRoot = buildDebugRoot(strategy, effortConfig);
+    var sourcePlanData = generateSourceBlockPlans(sources, personality, effortConfig, settings, debugRoot);
+    var planSets = buildGlobalCandidatePlanSets(sourcePlanData, personality, effortConfig, settings, debugRoot);
 
-function pushUniqueOrderVariant(list, order, seen) {
-    var sig = orderSignature(order);
-    if (seen[sig]) return;
-    seen[sig] = true;
-    list.push(order);
-}
+    if (planSets.length === 0) throw new Error("No valid block plans could be built.");
 
-function collectAllBlocksFromLayout(layout) {
-    var out = [];
-    var i;
+    var best = null;
 
-    if (layout && layout.placed) {
-        for (i = 0; i < layout.placed.length; i++) out.push(layout.placed[i].block);
-    }
-    if (layout && layout.unplaced) {
-        for (i = 0; i < layout.unplaced.length; i++) out.push(layout.unplaced[i]);
-    }
+    for (var i = 0; i < planSets.length && i < effortConfig.primaryPlanLimit; i++) {
+        var candidatePlan = planSets[i];
+        var primary = runPrimaryBlockLayout(candidatePlan, personality, effortConfig, settings, sourcePlanData, debugRoot);
+        debugRoot.stageRecords.push(buildStageRecord("primary#" + i, primary));
 
-    return out;
-}
+        var compacted = runCompactionPass(primary, personality, effortConfig, settings, sourcePlanData, debugRoot);
+        debugRoot.stageRecords.push(buildStageRecord("compaction#" + i, compacted));
 
-function buildCompactionOrderVariants(layout, settings) {
-    var seen = {};
-    var variants = [];
-    var placed = clonePlacedList(layout.placed || []);
-    var tail = layout.unplaced ? cloneBlockOrder(layout.unplaced) : [];
+        var split = runAdaptiveBlockSplittingPass(compacted, sourcePlanData, personality, effortConfig, settings, debugRoot);
+        debugRoot.stageRecords.push(buildStageRecord("split#" + i, split));
 
-    placed.sort(function(a, b) {
-        if (Math.abs(a.y - b.y) > EPS) return a.y - b.y;
-        if (Math.abs(a.x - b.x) > EPS) return a.x - b.x;
-        return b.block.area - a.block.area;
-    });
+        var holeFill = runHoleFillingPass(split, sourcePlanData, personality, effortConfig, settings, debugRoot);
+        debugRoot.stageRecords.push(buildStageRecord("holeFill#" + i, holeFill));
 
-    var reading = [];
-    var i;
-    for (i = 0; i < placed.length; i++) reading.push(placed[i].block);
-    for (i = 0; i < tail.length; i++) reading.push(tail[i]);
-    pushUniqueOrderVariant(variants, reading, seen);
+        var repaired = runLocalRepairPass(holeFill, sourcePlanData, personality, effortConfig, settings, debugRoot);
+        debugRoot.stageRecords.push(buildStageRecord("repair#" + i, repaired));
 
-    var widthFirst = cloneBlockOrder(reading);
-    widthFirst.sort(function(a, b) {
-        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-        if (a.blockH !== b.blockH) return a.blockH - b.blockH;
-        return b.area - a.area;
-    });
-    pushUniqueOrderVariant(variants, widthFirst, seen);
-
-    var areaFirst = cloneBlockOrder(reading);
-    areaFirst.sort(function(a, b) {
-        if (b.area !== a.area) return b.area - a.area;
-        if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
-        return a.blockH - b.blockH;
-    });
-    pushUniqueOrderVariant(variants, areaFirst, seen);
-
-    if (settings.searchEffort === "High") {
-        var mixed = perturbOrder(widthFirst, 17);
-        pushUniqueOrderVariant(variants, mixed, seen);
-    }
-
-    return variants;
-}
-
-function compactLayoutGreedy(layout, settings) {
-    if (!layout) return layout;
-
-    var allBlocks = collectAllBlocksFromLayout(layout);
-    if (allBlocks.length < 2) return layout;
-
-    var variants = buildCompactionOrderVariants(layout, settings);
-    var bestLayout = rebuildLayoutFromPlaced(layout.placed, layout.unplaced, settings, layout.meta);
-    var bestScore = scoreLayout(bestLayout, settings);
-
-    for (var i = 0; i < variants.length; i++) {
-        var candidate = nestBlocksSinglePass(variants[i], settings);
-        candidate = backfillUnplaced(candidate, settings);
-        if (!isLayoutSpacingValid(candidate, settings)) continue;
-
-        var candidateScore = scoreLayout(candidate, settings);
-        var betterByLength = candidateScore.usedNoTrailingGap < (bestScore.usedNoTrailingGap - EPS);
-        var tieOnLength = Math.abs(candidateScore.usedNoTrailingGap - bestScore.usedNoTrailingGap) <= EPS;
-        var betterByUtil = tieOnLength && (candidateScore.utilization > bestScore.utilization + 1e-6);
-        var betterByTotal = candidateScore.total < (bestScore.total - 1e-3);
-
-        if (betterByLength || betterByUtil || betterByTotal) {
-            bestLayout = candidate;
-            bestScore = candidateScore;
+        if (!best || compareScoreObjects(repaired.score, best.layoutState.score) < 0) {
+            best = {
+                layoutState: repaired,
+                sourcePlanData: sourcePlanData,
+                debugRoot: debugRoot,
+                personality: personality,
+                strategyName: personality.strategyName,
+                presetName: strategy.presetName,
+                personalityName: strategy.personalityName
+            };
         }
     }
 
-    bestLayout.meta = layout.meta;
-    return bestLayout;
+    return best;
 }
 
-function nestBlocks(blocks, settings) {
-    var variants = buildBlockOrderVariants(blocks, settings);
-    var bestLayout = null;
-    var bestScore = null;
-    var bestMeta = null;
-    var maxVariants = (settings.searchEffort === "High") ? 4 : 3;
+function summarizeCandidateComparison(candidate, baseline) {
+    if (!candidate || !baseline) return {};
+    return {
+        candidatePlaced: countPlacedCopies(candidate.layoutState),
+        candidateUnplaced: countUnplacedCopies(candidate.layoutState),
+        baselinePlaced: countPlacedCopies(baseline.layoutState),
+        baselineUnplaced: countUnplacedCopies(baseline.layoutState),
+        candidateLengthIn: parseFloat(inToStr(candidate.layoutState.score.usedNoTrailingGap)),
+        baselineLengthIn: parseFloat(inToStr(baseline.layoutState.score.usedNoTrailingGap))
+    };
+}
 
-    if (variants.length > maxVariants) variants = variants.slice(0, maxVariants);
+function rejectAgainstBaseline(candidate, baseline, settings) {
+    if (!candidate || !baseline) return null;
+    var candidatePlaced = countPlacedCopies(candidate.layoutState);
+    var baselinePlaced = countPlacedCopies(baseline.layoutState);
 
-    for (var v = 0; v < variants.length; v++) {
-        var layout = nestBlocksSinglePass(variants[v], settings);
-        layout = backfillUnplaced(layout, settings);
-        layout = compactLayoutGreedy(layout, settings);
-        layout = backfillUnplaced(layout, settings);
+    if (candidatePlaced < baselinePlaced) return "Baseline placed more copies.";
 
-        if (!isLayoutSpacingValid(layout, settings)) continue;
+    if (candidatePlaced === baselinePlaced) {
+        var lengthGap = candidate.layoutState.score.usedNoTrailingGap - baseline.layoutState.score.usedNoTrailingGap;
+        if (lengthGap > inToPt(0.35)) return "Baseline used materially shorter length.";
+    }
 
-        var score = scoreLayout(layout, settings);
-        if (!bestScore || score.total < bestScore.total) {
-            bestLayout = layout;
-            bestScore = score;
-            bestMeta = { variantIndex: v, step: 0 };
+    if (candidate.layoutState.validation && candidate.layoutState.validation.hardReject) return "Validation failed.";
+    return null;
+}
+
+function finalizeWinner(candidates, baseline, settings, effortConfig) {
+    var accepted = [];
+    var rejected = [];
+    var best = baseline;
+
+    for (var i = 0; i < candidates.length; i++) {
+        var candidate = candidates[i];
+        var reason = rejectAgainstBaseline(candidate, baseline, settings);
+        if (reason) {
+            candidate.debugRoot.rejectedReasons.push(reason);
+            rejected.push({ strategyName: candidate.strategyName, reason: reason });
+            continue;
         }
+        accepted.push(candidate);
+        if (!best || compareScoreObjects(candidate.layoutState.score, best.layoutState.score) < 0) best = candidate;
     }
 
-    if (bestLayout) {
-        bestLayout.meta = {
-            score: bestScore,
-            variantIndex: bestMeta.variantIndex,
-            step: bestMeta.step
-        };
-        return bestLayout;
+    if (!best) best = baseline;
+
+    var bestDebug = best.debugRoot;
+    bestDebug.candidateComparison = [];
+    for (i = 0; i < candidates.length; i++) {
+        bestDebug.candidateComparison.push({
+            strategyName: candidates[i].strategyName,
+            comparison: summarizeCandidateComparison(candidates[i], baseline),
+            rejectedReasons: candidates[i].debugRoot.rejectedReasons
+        });
+    }
+    bestDebug.rejectedCandidates = rejected;
+
+    return best;
+}
+
+function buildDebugSummaryText(result) {
+    var layoutState = result.layoutState;
+    var score = layoutState.score;
+    var sanity = layoutState.metrics.sanity;
+    var splitStats = result.debugRoot.splitStats || { attempted: 0, accepted: 0 };
+    var holeStats = result.debugRoot.holeFillStats || { attempted: 0, accepted: 0, filledCopies: 0 };
+
+    var lines = [];
+    lines.push("Strategy: " + result.strategyName);
+    lines.push("Preset: " + result.presetName);
+    lines.push("Personality: " + result.personalityName);
+    lines.push("Placed copies: " + countPlacedCopies(layoutState));
+    lines.push("Unplaced copies: " + countUnplacedCopies(layoutState));
+    lines.push("Used length: " + inToStr(score.usedNoTrailingGap) + " in");
+    lines.push("Utilization: " + (score.utilization * 100).toFixed(1) + "%");
+    lines.push("Central cavity ratio: " + (sanity.largestCentralCavityRatio * 100).toFixed(1) + "%");
+    lines.push("Source fragmentation: " + sanity.sourceFragmentationScore.toFixed(2));
+    lines.push("Split accepted: " + splitStats.accepted + "/" + splitStats.attempted);
+    lines.push("Hole fill accepted: " + holeStats.accepted + "/" + holeStats.attempted + " (" + holeStats.filledCopies + " copies)");
+    return lines.join("\n");
+}
+
+function solveFromSources(sources, settings) {
+    resetBlockUidCounter();
+
+    var effortConfig = getEffortConfig(settings.searchEffort);
+    var strategies = buildStrategyCandidates(settings);
+    var baselineResult = null;
+    var smartCandidates = [];
+
+    for (var i = 0; i < strategies.length; i++) {
+        var strategy = strategies[i];
+        if (strategy.isBaseline) baselineResult = solveBaselineLayout(sources, settings, strategy, effortConfig);
+        else smartCandidates.push(solveSmartStrategy(sources, settings, strategy, effortConfig));
     }
 
-    var fallback = nestBlocksSinglePass(blocks, settings);
-    fallback = backfillUnplaced(fallback, settings);
-    fallback = compactLayoutGreedy(fallback, settings);
-    fallback = backfillUnplaced(fallback, settings);
-    if (!isLayoutSpacingValid(fallback, settings)) {
-        throw new Error("Internal spacing guard failed. No valid layout found with requested spacing.");
-    }
-    return fallback;
+    if (!baselineResult) throw new Error("Baseline solver did not run.");
+
+    var winner = finalizeWinner(smartCandidates, baselineResult, settings, effortConfig);
+    winner.debugRoot.candidateCount = strategies.length;
+    winner.debugRoot.winningStrategyName = winner.strategyName;
+    winner.debugRoot.winningPreset = winner.personalityName;
+    winner.debugRoot.winningSearchEffort = effortConfig.name;
+    winner.debugRoot.winningScoreBreakdown = winner.layoutState.score;
+    winner.debugRoot.sanityMetrics = winner.layoutState.metrics.sanity;
+    winner.debugRoot.holeFillStats = winner.debugRoot.holeFillStats || { attempted: 0, accepted: 0, filledCopies: 0 };
+    winner.debugRoot.splitStats = winner.debugRoot.splitStats || { attempted: 0, accepted: 0, blocksSplit: 0, copiesRecovered: 0 };
+    winner.debugRoot.debugSummaryText = buildDebugSummaryText(winner);
+
+    return {
+        sources: sources,
+        layout: winner.layoutState,
+        usedSettings: settings,
+        debugMeta: winner.debugRoot,
+        winningStrategyName: winner.strategyName,
+        winningPreset: winner.personalityName,
+        winningSearchEffort: effortConfig.name,
+        winningScoreBreakdown: winner.layoutState.score,
+        sanityMetrics: winner.layoutState.metrics.sanity,
+        holeFillStats: winner.debugRoot.holeFillStats,
+        splitStats: winner.debugRoot.splitStats,
+        candidateCount: strategies.length
+    };
 }
 
 // =====================================================
@@ -1881,18 +2486,17 @@ function getLocalCellPosition(block, index, spacing) {
 
 function transformLocalForBlockRotation(localX, localY, cellW, cellH, blockW, blockH, rotatedOnSheet) {
     if (!rotatedOnSheet) return { x: localX, y: localY };
-
     return {
         x: blockH - localY - cellH,
         y: localX
     };
 }
 
-function renderPlacedBlocks(layout, outputLayer, settings) {
+function renderPlacedBlocks(layoutState, outputLayer, settings) {
     var spacing = inToPt(settings.spacingIn);
 
-    for (var i = 0; i < layout.placed.length; i++) {
-        var pb = layout.placed[i];
+    for (var i = 0; i < layoutState.placed.length; i++) {
+        var pb = layoutState.placed[i];
         var b = pb.block;
 
         for (var n = 0; n < b.count; n++) {
@@ -1909,7 +2513,6 @@ function renderPlacedBlocks(layout, outputLayer, settings) {
 
             var itemX = pb.x + tr.x;
             var itemY = pb.y + tr.y;
-
             var rotationDeg = 0;
             if (b.rotatedInside) rotationDeg += 90;
             if (pb.rotatedOnSheet) rotationDeg += 90;
@@ -1920,50 +2523,36 @@ function renderPlacedBlocks(layout, outputLayer, settings) {
     }
 }
 
-// =====================================================
-// Summary
-// =====================================================
-
-function countPlacedCopies(layout) {
-    var total = 0;
-    for (var i = 0; i < layout.placed.length; i++) total += layout.placed[i].block.count;
-    return total;
+function renderSolution(doc, result, settings) {
+    var outputLayer = prepareOutputLayer(doc);
+    renderPlacedBlocks(result.layout, outputLayer, settings);
+    if (settings.hideSourceLayersAfterBuild) hideSourceLayers(doc);
 }
 
-function countUnplacedCopies(layout) {
-    var total = 0;
-    for (var i = 0; i < layout.unplaced.length; i++) total += layout.unplaced[i].count;
-    return total;
-}
+// =====================================================
+// Summary + bridge payload
+// =====================================================
 
 function buildSummary(result, settings) {
-    var usedNoTrailingGap = Math.max(0, result.layout.usedLength - inToPt(settings.spacingIn));
-    var orderShown = clamp(_numOr(settings.orderDiscipline, DEFAULTS.orderDiscipline), 0, 100);
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var util = 0;
-    if (usedNoTrailingGap > EPS) {
-        var areaSum = 0;
-        for (var i = 0; i < result.layout.placed.length; i++) areaSum += result.layout.placed[i].block.area;
-        util = clamp(areaSum / Math.max(sheetWidth * usedNoTrailingGap, EPS), 0, 1);
-    }
     var lines = [];
-    lines.push("WeMust NESTER v6");
-    lines.push("Objective: Min length + Max width fill");
-    if (settings.optimizePreset) lines.push("Preset: " + settings.optimizePreset);
-    if (settings.searchEffort) lines.push("Solver effort: " + settings.searchEffort);
-    lines.push("Order control (resolved): " + orderShown);
+    var score = result.layout.score;
+    var sanity = result.sanityMetrics;
+    var splitStats = result.splitStats || { accepted: 0, attempted: 0 };
+    var holeStats = result.holeFillStats || { accepted: 0, attempted: 0, filledCopies: 0 };
+
+    lines.push("WeMust NESTER v7");
+    lines.push("Requested preset: " + settings.optimizePreset);
+    lines.push("Winning strategy: " + result.winningStrategyName);
+    lines.push("Winning personality: " + result.winningPreset);
+    lines.push("Solver effort: " + result.winningSearchEffort);
+    lines.push("Candidate count: " + result.candidateCount);
     lines.push("Placed copies: " + countPlacedCopies(result.layout));
     lines.push("Unplaced copies: " + countUnplacedCopies(result.layout));
-    lines.push("Used length: " + inToStr(usedNoTrailingGap) + " in");
-    lines.push("Width utilization: " + (util * 100).toFixed(1) + "%");
-    lines.push("Item rotation in block: " + (settings.allowItemRotationInBlock ? "On" : "Off"));
-    lines.push("Block rotation on sheet: " + (settings.allowBlockRotationOnSheet ? "On" : "Off"));
-    if (result.layout.meta && result.layout.meta.score) {
-        lines.push("Search variant: " + result.layout.meta.variantIndex + ", step: " + result.layout.meta.step);
-    }
-    if (result.layout.meta && result.layout.meta.autoTuning) {
-        lines.push("Auto candidates: " + result.layout.meta.autoTuning.candidateCount);
-    }
+    lines.push("Used length: " + inToStr(score.usedNoTrailingGap) + " in");
+    lines.push("Width utilization: " + (score.utilization * 100).toFixed(1) + "%");
+    lines.push("Central cavity ratio: " + (sanity.largestCentralCavityRatio * 100).toFixed(1) + "%");
+    lines.push("Split recovery: " + splitStats.accepted + "/" + splitStats.attempted);
+    lines.push("Hole fill recovery: " + holeStats.accepted + "/" + holeStats.attempted + " (" + holeStats.filledCopies + " copies)");
     return lines.join("\n");
 }
 
@@ -1995,421 +2584,18 @@ function buildSourceQuantitySummary(result) {
     if (result.layout && result.layout.placed) {
         for (i = 0; i < result.layout.placed.length; i++) {
             var placed = result.layout.placed[i];
-            if (byKey[placed.block.sourceKey]) {
-                byKey[placed.block.sourceKey].placedQty += placed.block.count;
-            }
+            if (byKey[placed.block.sourceKey]) byKey[placed.block.sourceKey].placedQty += placed.block.count;
         }
     }
 
     if (result.layout && result.layout.unplaced) {
         for (i = 0; i < result.layout.unplaced.length; i++) {
             var unplaced = result.layout.unplaced[i];
-            if (byKey[unplaced.sourceKey]) {
-                byKey[unplaced.sourceKey].unplacedQty += unplaced.count;
-            }
+            if (byKey[unplaced.sourceKey]) byKey[unplaced.sourceKey].unplacedQty += unplaced.count;
         }
     }
 
     return out;
-}
-
-// =====================================================
-// Build pipeline
-// =====================================================
-
-function cloneSettings(settings) {
-    var out = {};
-    for (var k in settings) {
-        if (settings.hasOwnProperty(k)) out[k] = settings[k];
-    }
-    return out;
-}
-
-function solveFromSources(sources, settings) {
-    var planInfo = collectSourcePlanSets(sources, settings);
-    var planCombos = buildPlanCombinations(planInfo.planSets, settings);
-
-    if (planCombos.length === 0) {
-        throw new Error("No valid block plans could be built.");
-    }
-
-    var bestBlocksInfo = null;
-    var bestLayout = null;
-    var bestScore = null;
-    var bestCombo = null;
-    var bestComboIndex = -1;
-
-    for (var i = 0; i < planCombos.length; i++) {
-        var combo = planCombos[i];
-        var blocksInfo = materializeBlocksFromPlans(
-            combo.plans,
-            settings,
-            planInfo.dominantId,
-            planInfo.failedNames
-        );
-
-        if (blocksInfo.blocks.length === 0) continue;
-
-        var layout = nestBlocks(blocksInfo.blocks, settings);
-        var score = scoreLayout(layout, settings);
-
-        if (!bestScore || score.total < bestScore.total || (score.total === bestScore.total && combo.heuristicScore < bestCombo.heuristicScore)) {
-            bestBlocksInfo = blocksInfo;
-            bestLayout = layout;
-            bestScore = score;
-            bestCombo = combo;
-            bestComboIndex = i;
-        }
-    }
-
-    if (!bestBlocksInfo || !bestLayout || !bestCombo) {
-        throw new Error("No valid block plans could be built.");
-    }
-
-    bestLayout.meta = bestLayout.meta || {};
-    bestLayout.meta.planComboIndex = bestComboIndex;
-    bestLayout.meta.planComboCount = planCombos.length;
-    bestLayout.meta.planComboHeuristic = bestCombo.heuristicScore;
-
-    return {
-        sources: sources,
-        blocksInfo: bestBlocksInfo,
-        layout: bestLayout
-    };
-}
-
-function renderSolution(doc, solution, settings) {
-    var outputLayer = prepareOutputLayer(doc);
-    renderPlacedBlocks(solution.layout, outputLayer, settings);
-
-    if (settings.hideSourceLayersAfterBuild) {
-        hideSourceLayers(doc);
-    }
-}
-
-function buildCandidateSettings(baseSettings) {
-    var out = [];
-    var preset = baseSettings.optimizePreset || "Auto";
-    var effort = baseSettings.searchEffort || "Normal";
-
-    function addCandidate(s) {
-        var key = [
-            s.orderDiscipline,
-            s.maxBlocksPerFile,
-            s.maxBlockAspectRatio.toFixed(2),
-            s.allowBlockRotationOnSheet ? 1 : 0
-        ].join("|");
-
-        for (var i = 0; i < out.length; i++) {
-            var existing = out[i];
-            var k2 = [
-                existing.orderDiscipline,
-                existing.maxBlocksPerFile,
-                existing.maxBlockAspectRatio.toFixed(2),
-                existing.allowBlockRotationOnSheet ? 1 : 0
-            ].join("|");
-            if (k2 === key) return;
-        }
-        out.push(s);
-    }
-
-    if (preset === "Auto") {
-        var orders = (effort === "High")
-            ? [22, 46, 70]
-            : [32, 60];
-
-        for (var oi = 0; oi < orders.length; oi++) {
-            var c = cloneSettings(baseSettings);
-            c.orderDiscipline = orders[oi];
-            applyDerivedTuning(c);
-            addCandidate(c);
-
-            if (effort === "High" && oi === 1) {
-                var c2 = cloneSettings(c);
-                c2.maxBlocksPerFile = clamp(c2.maxBlocksPerFile + 1, 2, 4);
-                c2.maxBlockAspectRatio = c2.maxBlockAspectRatio + 0.25;
-                addCandidate(c2);
-            }
-        }
-    } else {
-        var single = cloneSettings(baseSettings);
-        applyDerivedTuning(single);
-        addCandidate(single);
-
-        if (effort === "High") {
-            var alt = cloneSettings(single);
-            alt.maxBlocksPerFile = clamp(alt.maxBlocksPerFile + 1, 2, 4);
-            alt.maxBlockAspectRatio = alt.maxBlockAspectRatio + 0.2;
-            addCandidate(alt);
-        }
-    }
-
-    return out;
-}
-
-function buildOnce(doc, settings) {
-    var sources = collectPlacedItems(doc, settings.quantityOverrides);
-
-    if (sources.length === 0) {
-        throw new Error("No placed items found in the current document.");
-    }
-
-    var candidates = buildCandidateSettings(settings);
-    if (candidates.length === 0) {
-        throw new Error("No candidate settings generated.");
-    }
-
-    var bestSolution = null;
-    var bestSettings = null;
-    var bestScore = null;
-
-    for (var i = 0; i < candidates.length; i++) {
-        var cSettings = candidates[i];
-        var solved = solveFromSources(sources, cSettings);
-        var s = scoreLayout(solved.layout, cSettings);
-
-        if (!bestScore || s.total < bestScore.total) {
-            bestSolution = solved;
-            bestSettings = cSettings;
-            bestScore = s;
-        }
-    }
-
-    if (!bestSolution || !bestSettings) {
-        throw new Error("Solver could not produce a valid layout.");
-    }
-
-    renderSolution(doc, bestSolution, bestSettings);
-    bestSolution.layout.meta = bestSolution.layout.meta || {};
-    bestSolution.layout.meta.autoTuning = {
-        candidateCount: candidates.length,
-        selectedOrder: bestSettings.orderDiscipline,
-        selectedMaxBlocks: bestSettings.maxBlocksPerFile,
-        selectedAspect: bestSettings.maxBlockAspectRatio
-    };
-
-    return {
-        sources: bestSolution.sources,
-        blocksInfo: bestSolution.blocksInfo,
-        layout: bestSolution.layout,
-        usedSettings: bestSettings
-    };
-}
-
-// =====================================================
-// Main loop
-// =====================================================
-
-function main() {
-    if (app.documents.length === 0) {
-        alert("No open document found.");
-        return;
-    }
-
-    var doc = app.activeDocument;
-    var current = {
-        sheetWidthIn: DEFAULTS.sheetWidthIn,
-        maxLengthIn: DEFAULTS.maxLengthIn,
-        spacingIn: DEFAULTS.spacingIn,
-        optimizePreset: DEFAULTS.optimizePreset,
-        searchEffort: DEFAULTS.searchEffort,
-        mode: DEFAULTS.mode,
-        orderDiscipline: DEFAULTS.orderDiscipline,
-        maxBlocksPerFile: DEFAULTS.maxBlocksPerFile,
-        maxBlockAspectRatio: DEFAULTS.maxBlockAspectRatio,
-        allowItemRotationInBlock: DEFAULTS.allowItemRotationInBlock,
-        allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
-        hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild,
-        useDominantShelf: DEFAULTS.useDominantShelf,
-        dominantShelfMaxRows: DEFAULTS.dominantShelfMaxRows,
-        widthFillPriority: DEFAULTS.widthFillPriority,
-        sameSourceProximity: DEFAULTS.sameSourceProximity,
-        cavityPenalty: DEFAULTS.cavityPenalty
-    };
-
-    while (true) {
-        var settings = showSettingsDialog(current);
-        if (!settings) break;
-
-        current = settings;
-
-        try {
-            var result = buildOnce(doc, settings);
-            var summary = buildSummary(result, result.usedSettings || settings);
-            var again = confirm(summary + "\n\nBuild another variation?");
-            if (!again) break;
-        } catch (err) {
-            var retry = confirm("Error:\n" + err + "\n\nTry again with new settings?");
-            if (!retry) break;
-        }
-    }
-}
-
-function nesterRunMain() {
-    var previousLevel = app.userInteractionLevel;
-    try {
-        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
-        main();
-        return "OK";
-    } catch (e) {
-        return "ERROR: " + e;
-    } finally {
-        try { app.userInteractionLevel = previousLevel; } catch (_e) {}
-    }
-}
-
-function _copyDefaults() {
-    return {
-        sheetWidthIn: DEFAULTS.sheetWidthIn,
-        maxLengthIn: DEFAULTS.maxLengthIn,
-        spacingIn: DEFAULTS.spacingIn,
-        optimizePreset: DEFAULTS.optimizePreset,
-        searchEffort: DEFAULTS.searchEffort,
-        mode: DEFAULTS.mode,
-        orderDiscipline: DEFAULTS.orderDiscipline,
-        maxBlocksPerFile: DEFAULTS.maxBlocksPerFile,
-        maxBlockAspectRatio: DEFAULTS.maxBlockAspectRatio,
-        allowItemRotationInBlock: DEFAULTS.allowItemRotationInBlock,
-        allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
-        hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild,
-        useDominantShelf: DEFAULTS.useDominantShelf,
-        dominantShelfMaxRows: DEFAULTS.dominantShelfMaxRows,
-        widthFillPriority: DEFAULTS.widthFillPriority,
-        sameSourceProximity: DEFAULTS.sameSourceProximity,
-        cavityPenalty: DEFAULTS.cavityPenalty
-    };
-}
-
-function _numOr(v, fallback) {
-    var n = parseFloat(v);
-    return isNaN(n) ? fallback : n;
-}
-
-function _intOr(v, fallback) {
-    var n = parseInt(v, 10);
-    return isNaN(n) ? fallback : n;
-}
-
-function _boolOr(v, fallback) {
-    if (v === true || v === false) return v;
-    if (v === 1 || v === "1" || v === "true") return true;
-    if (v === 0 || v === "0" || v === "false") return false;
-    return fallback;
-}
-
-function _oneOfOr(v, allowed, fallback) {
-    var s = String(v);
-    for (var i = 0; i < allowed.length; i++) {
-        if (allowed[i] === s) return s;
-    }
-    return fallback;
-}
-
-function _jsonEscape(str) {
-    return String(str)
-        .replace(/\\/g, "\\\\")
-        .replace(/"/g, "\\\"")
-        .replace(/\r/g, "\\r")
-        .replace(/\n/g, "\\n");
-}
-
-function _jsonStringify(value) {
-    if (typeof JSON !== "undefined" && JSON.stringify) {
-        return JSON.stringify(value);
-    }
-
-    if (value === null || value === undefined) return "null";
-    if (typeof value === "string") return "\"" + _jsonEscape(value) + "\"";
-    if (typeof value === "number" || typeof value === "boolean") return String(value);
-
-    if (value instanceof Array) {
-        var arrParts = [];
-        for (var i = 0; i < value.length; i++) arrParts.push(_jsonStringify(value[i]));
-        return "[" + arrParts.join(",") + "]";
-    }
-
-    var objParts = [];
-    for (var k in value) {
-        if (!value.hasOwnProperty(k)) continue;
-        objParts.push("\"" + _jsonEscape(k) + "\":" + _jsonStringify(value[k]));
-    }
-    return "{" + objParts.join(",") + "}";
-}
-
-function _jsonParse(str) {
-    if (typeof JSON !== "undefined" && JSON.parse) {
-        return JSON.parse(String(str));
-    }
-    return eval("(" + str + ")");
-}
-
-function applyDerivedTuning(s) {
-    var orderBias = clamp(_numOr(s.orderDiscipline, DEFAULTS.orderDiscipline), 0, 100) / 100.0;
-    s.orderDiscipline = clamp(_numOr(s.orderDiscipline, DEFAULTS.orderDiscipline), 0, 100);
-
-    // Keep legacy knobs internal and derive them from compact user controls.
-    s.mode = "Production";
-    s.maxBlocksPerFile = (s.orderDiscipline < 25) ? 3 : 2;
-    s.maxBlockAspectRatio = 2.2 + ((1 - orderBias) * 1.2); // 2.2..3.4
-
-    s.useDominantShelf = true;
-    s.dominantShelfMaxRows = clamp(Math.round(5 + (orderBias * 2)), 5, 7);
-    s.widthFillPriority = 92;
-    s.sameSourceProximity = clamp(20 + (s.orderDiscipline * 0.7), 0, 100);
-    s.cavityPenalty = clamp(55 + (s.orderDiscipline * 0.35), 0, 100);
-}
-
-function normalizeQuantityOverrides(raw) {
-    var out = {};
-    if (!raw || typeof raw !== "object") return out;
-
-    for (var key in raw) {
-        if (!raw.hasOwnProperty(key)) continue;
-        var qty = _intOr(raw[key], NaN);
-        if (isNaN(qty)) continue;
-        out[key] = Math.max(1, qty);
-    }
-
-    return out;
-}
-
-function normalizeSettingsFromPanel(input) {
-    var s = _copyDefaults();
-    if (!input || typeof input !== "object") return s;
-
-    s.sheetWidthIn = Math.max(0.01, _numOr(input.sheetWidthIn, s.sheetWidthIn));
-    s.maxLengthIn = Math.max(0.01, _numOr(input.maxLengthIn, s.maxLengthIn));
-    s.spacingIn = Math.max(0, _numOr(input.spacingIn, s.spacingIn));
-
-    s.optimizePreset = _oneOfOr(input.optimizePreset, ["Auto", "Compact", "Balanced", "Ordered"], s.optimizePreset);
-    s.searchEffort = _oneOfOr(input.searchEffort, ["Normal", "High"], s.searchEffort);
-    s.allowItemRotationInBlock = _boolOr(input.allowItemRotationInBlock, s.allowItemRotationInBlock);
-
-    if (s.optimizePreset === "Compact") s.orderDiscipline = 22;
-    else if (s.optimizePreset === "Balanced") s.orderDiscipline = 48;
-    else if (s.optimizePreset === "Ordered") s.orderDiscipline = 78;
-    else s.orderDiscipline = clamp(_numOr(input.orderDiscipline, s.orderDiscipline), 0, 100);
-
-    s.allowBlockRotationOnSheet = _boolOr(input.allowBlockRotationOnSheet, s.allowBlockRotationOnSheet);
-    s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
-    s.quantityOverrides = normalizeQuantityOverrides(input.quantityOverrides);
-
-    applyDerivedTuning(s);
-
-    return s;
-}
-
-function nesterGetDefaultSettings() {
-    return _jsonStringify({
-        sheetWidthIn: DEFAULTS.sheetWidthIn,
-        maxLengthIn: DEFAULTS.maxLengthIn,
-        spacingIn: DEFAULTS.spacingIn,
-        optimizePreset: DEFAULTS.optimizePreset,
-        searchEffort: DEFAULTS.searchEffort,
-        allowItemRotationInBlock: DEFAULTS.allowItemRotationInBlock,
-        allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
-        hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild,
-    });
 }
 
 function getSourceFolderLabel(sources) {
@@ -2421,11 +2607,7 @@ function getSourceFolderLabel(sources) {
     for (var i = 0; i < sources.length; i++) {
         var candidate = getPreferredFolderLabel(sources[i].filePath || "");
         if (!candidate) return "MixedFolders";
-
-        if (!/.+_\d{4,6}$/.test(candidate)) {
-            return "MixedFolders";
-        }
-
+        if (!/.+_\d{4,6}$/.test(candidate)) return "MixedFolders";
         if (!seen[candidate]) {
             seen[candidate] = true;
             folderNames.push(candidate);
@@ -2467,6 +2649,40 @@ function buildOutputBoundsText(doc) {
     return inToStr(width) + "x" + inToStr(height) + "in";
 }
 
+function buildSearchMeta(result) {
+    return {
+        candidateCount: result.candidateCount,
+        winningStrategyName: result.winningStrategyName,
+        winningPreset: result.winningPreset,
+        winningSearchEffort: result.winningSearchEffort,
+        winningScoreBreakdown: result.winningScoreBreakdown,
+        sanityMetrics: result.sanityMetrics,
+        holeFillStats: result.holeFillStats,
+        splitStats: result.splitStats,
+        debugSummaryText: result.debugMeta.debugSummaryText,
+        selectedPresetPersonality: result.debugMeta.selectedPresetPersonality,
+        selectedSearchEffort: result.debugMeta.selectedSearchEffort,
+        sourcePlanSummary: result.debugMeta.sourcePlanSummary,
+        globalCandidatePlanSets: result.debugMeta.globalCandidatePlanSets,
+        blockOrderVariantsConsidered: result.debugMeta.blockOrderVariantsConsidered,
+        stageRecords: result.debugMeta.stageRecords,
+        candidateComparison: result.debugMeta.candidateComparison,
+        rejectedCandidates: result.debugMeta.rejectedCandidates,
+        failedSources: result.debugMeta.failedSources
+    };
+}
+
+function buildOnce(doc, settings) {
+    var sources = collectAndNormalizeSources(doc, settings);
+    var result = solveFromSources(sources, settings);
+    renderSolution(doc, result, settings);
+    return result;
+}
+
+// =====================================================
+// Selection / navigation
+// =====================================================
+
 function focusViewOnItem(doc, item) {
     if (!doc || !item) return;
 
@@ -2496,12 +2712,24 @@ function focusViewOnItem(doc, item) {
             var viewHeight = Math.abs(viewBounds[1] - viewBounds[3]);
             if (viewWidth > EPS && viewHeight > EPS) {
                 var fitScale = Math.min(viewWidth / width, viewHeight / height);
-                if (isFinite(fitScale) && fitScale > 0) {
-                    view.zoom = Math.max(0.05, view.zoom * fitScale * 0.82);
-                }
+                // if (isFinite(fitScale) && fitScale > 0) view.zoom = Math.max(0.05, view.zoom * fitScale * 0.82);
             }
         }
     } catch (e4) {}
+}
+
+function findPlacedCopyBySourceKey(doc, sourceKey) {
+    var layer = findLayerByName(doc, OUTPUT_LAYER_NAME);
+    if (!layer || layer.pageItems.length === 0) return null;
+
+    var needle = "NESTER_SOURCE_KEY=" + String(sourceKey || "");
+    for (var i = 0; i < layer.pageItems.length; i++) {
+        var item = layer.pageItems[i];
+        try {
+            if (item.note === needle) return item;
+        } catch (e1) {}
+    }
+    return null;
 }
 
 function nesterSelectPlacedCopyBySourceKey(sourceKey) {
@@ -2509,35 +2737,13 @@ function nesterSelectPlacedCopyBySourceKey(sourceKey) {
     try {
         app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
 
-        if (app.documents.length === 0) {
-            return _jsonStringify({ ok: false, error: "No open document found." });
-        }
+        if (app.documents.length === 0) return _jsonStringify({ ok: false, error: "No open document found." });
 
-        var doc = app.activeDocument;
-        var layer = findLayerByName(doc, OUTPUT_LAYER_NAME);
-        if (!layer || layer.pageItems.length === 0) {
-            return _jsonStringify({ ok: false, error: "No built output found." });
-        }
+        var found = findPlacedCopyBySourceKey(app.activeDocument, sourceKey);
+        if (!found) return _jsonStringify({ ok: false, error: "No matching placed copy found." });
 
-        var needle = "NESTER_SOURCE_KEY=" + String(sourceKey || "");
-        var found = null;
-
-        for (var i = 0; i < layer.pageItems.length; i++) {
-            var item = layer.pageItems[i];
-            try {
-                if (item.note === needle) {
-                    found = item;
-                    break;
-                }
-            } catch (e1) {}
-        }
-
-        if (!found) {
-            return _jsonStringify({ ok: false, error: "No matching placed copy found." });
-        }
-
-        doc.selection = null;
-        doc.selection = [found];
+        app.activeDocument.selection = null;
+        app.activeDocument.selection = [found];
         app.redraw();
         return _jsonStringify({ ok: true });
     } catch (e) {
@@ -2552,36 +2758,14 @@ function nesterGoToPlacedCopyBySourceKey(sourceKey) {
     try {
         app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
 
-        if (app.documents.length === 0) {
-            return _jsonStringify({ ok: false, error: "No open document found." });
-        }
+        if (app.documents.length === 0) return _jsonStringify({ ok: false, error: "No open document found." });
 
-        var doc = app.activeDocument;
-        var layer = findLayerByName(doc, OUTPUT_LAYER_NAME);
-        if (!layer || layer.pageItems.length === 0) {
-            return _jsonStringify({ ok: false, error: "No built output found." });
-        }
+        var found = findPlacedCopyBySourceKey(app.activeDocument, sourceKey);
+        if (!found) return _jsonStringify({ ok: false, error: "No matching placed copy found." });
 
-        var needle = "NESTER_SOURCE_KEY=" + String(sourceKey || "");
-        var found = null;
-
-        for (var i = 0; i < layer.pageItems.length; i++) {
-            var item = layer.pageItems[i];
-            try {
-                if (item.note === needle) {
-                    found = item;
-                    break;
-                }
-            } catch (e1) {}
-        }
-
-        if (!found) {
-            return _jsonStringify({ ok: false, error: "No matching placed copy found." });
-        }
-
-        doc.selection = null;
-        doc.selection = [found];
-        focusViewOnItem(doc, found);
+        app.activeDocument.selection = null;
+        app.activeDocument.selection = [found];
+        focusViewOnItem(app.activeDocument, found);
         app.redraw();
         return _jsonStringify({ ok: true });
     } catch (e) {
@@ -2590,6 +2774,124 @@ function nesterGoToPlacedCopyBySourceKey(sourceKey) {
         try { app.userInteractionLevel = previousLevel; } catch (_e) {}
     }
 }
+
+// =====================================================
+// Panel settings normalization
+// =====================================================
+
+function normalizeQuantityOverrides(raw) {
+    var out = {};
+    if (!raw || typeof raw !== "object") return out;
+
+    for (var key in raw) {
+        if (!raw.hasOwnProperty(key)) continue;
+        var qty = _intOr(raw[key], NaN);
+        if (isNaN(qty)) continue;
+        out[key] = Math.max(1, qty);
+    }
+
+    return out;
+}
+
+function normalizeSettingsFromPanel(input) {
+    var s = cloneSettings(DEFAULTS);
+    if (!input || typeof input !== "object") return s;
+
+    s.sheetWidthIn = Math.max(0.01, _numOr(input.sheetWidthIn, s.sheetWidthIn));
+    s.maxLengthIn = Math.max(0.01, _numOr(input.maxLengthIn, s.maxLengthIn));
+    s.spacingIn = Math.max(0, _numOr(input.spacingIn, s.spacingIn));
+    s.optimizePreset = _oneOfOr(input.optimizePreset, ["Auto", "Compact", "Balanced", "Ordered"], s.optimizePreset);
+    s.searchEffort = _oneOfOr(input.searchEffort, ["Normal", "High"], s.searchEffort);
+    s.allowItemRotationInBlock = _boolOr(input.allowItemRotationInBlock, s.allowItemRotationInBlock);
+    s.allowBlockRotationOnSheet = _boolOr(input.allowBlockRotationOnSheet, s.allowBlockRotationOnSheet);
+    s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
+    s.quantityOverrides = normalizeQuantityOverrides(input.quantityOverrides);
+    return s;
+}
+
+function nesterGetDefaultSettings() {
+    return _jsonStringify({
+        sheetWidthIn: DEFAULTS.sheetWidthIn,
+        maxLengthIn: DEFAULTS.maxLengthIn,
+        spacingIn: DEFAULTS.spacingIn,
+        optimizePreset: DEFAULTS.optimizePreset,
+        searchEffort: DEFAULTS.searchEffort,
+        allowItemRotationInBlock: DEFAULTS.allowItemRotationInBlock,
+        allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
+        hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild
+    });
+}
+
+// =====================================================
+// Development helpers
+// =====================================================
+
+function _testSplitFallbacks() {
+    var partitions = buildFallbackPartitions(12, 90);
+    return {
+        count: partitions.length,
+        first: partitions.length ? partitions[0].join("+") : ""
+    };
+}
+
+function _testFreeRectMerging() {
+    var input = [
+        { x: 0, y: 0, w: 10, h: 10 },
+        { x: 10, y: 0, w: 10, h: 10 }
+    ];
+    var merged = mergeAdjacentFreeRects(input);
+    return {
+        inputCount: input.length,
+        mergedCount: merged.length,
+        mergedWidth: merged.length ? merged[0].w : 0
+    };
+}
+
+function _testScoreOrdering() {
+    var a = { total: 100 };
+    var b = { total: 200 };
+    return {
+        compareAB: compareScoreObjects(a, b),
+        compareBA: compareScoreObjects(b, a),
+        compareAA: compareScoreObjects(a, a)
+    };
+}
+
+function nesterRunSolverTestHarness() {
+    return _jsonStringify({
+        ok: true,
+        tests: {
+            splitFallbacks: _testSplitFallbacks(),
+            freeRectMerging: _testFreeRectMerging(),
+            scoreOrdering: _testScoreOrdering()
+        }
+    });
+}
+
+// =====================================================
+// ScriptUI entry point kept for manual host execution
+// =====================================================
+
+function nesterRunMain() {
+    var previousLevel = app.userInteractionLevel;
+    try {
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+
+        if (app.documents.length === 0) return "ERROR: No open document found.";
+
+        var settings = cloneSettings(DEFAULTS);
+        var result = buildOnce(app.activeDocument, settings);
+        return buildSummary(result, settings);
+    } catch (e) {
+        return "ERROR: " + e;
+    } finally {
+        try { app.userInteractionLevel = previousLevel; } catch (_e) {}
+    }
+}
+
+// =====================================================
+// CEP bridge entry point
+// =====================================================
 
 function nesterRunWithSettings(settingsJson) {
     var previousLevel = app.userInteractionLevel;
@@ -2607,20 +2909,30 @@ function nesterRunWithSettings(settingsJson) {
 
         var settings = normalizeSettingsFromPanel(parsed);
         var result = buildOnce(app.activeDocument, settings);
-        var effective = result.usedSettings || settings;
-        var usedNoTrailingGap = Math.max(0, result.layout.usedLength - inToPt(effective.spacingIn));
+        var score = result.layout.score;
+        var summary = buildSummary(result, settings);
+        var searchMeta = buildSearchMeta(result);
 
         return _jsonStringify({
             ok: true,
-            summary: buildSummary(result, effective),
-            usedLengthIn: parseFloat(inToStr(usedNoTrailingGap)),
+            summary: summary,
+            usedLengthIn: parseFloat(inToStr(score.usedNoTrailingGap)),
             placedCopies: countPlacedCopies(result.layout),
             unplacedCopies: countUnplacedCopies(result.layout),
-            searchMeta: result.layout.meta ? result.layout.meta : null,
+            searchMeta: searchMeta,
             sourceItems: buildSourceQuantitySummary(result),
             outputBoundsText: buildOutputBoundsText(app.activeDocument),
             sourceFolderLabel: getSourceFolderLabel(result.sources),
-            outputSizeText: buildOutputBoundsText(app.activeDocument)
+            outputSizeText: buildOutputBoundsText(app.activeDocument),
+            candidateCount: result.candidateCount,
+            winningStrategyName: result.winningStrategyName,
+            winningPreset: result.winningPreset,
+            winningSearchEffort: result.winningSearchEffort,
+            winningScoreBreakdown: result.winningScoreBreakdown,
+            sanityMetrics: result.sanityMetrics,
+            holeFillStats: result.holeFillStats,
+            splitStats: result.splitStats,
+            debugSummaryText: result.debugMeta.debugSummaryText
         });
     } catch (e) {
         return _jsonStringify({ ok: false, error: String(e) });
@@ -2628,33 +2940,3 @@ function nesterRunWithSettings(settingsJson) {
         try { app.userInteractionLevel = previousLevel; } catch (_e) {}
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
