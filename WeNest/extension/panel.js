@@ -7,11 +7,12 @@
   var STORAGE_KEY = "nester.settings.v5";
   var formEl = document.getElementById("settings-form");
   var runBtn = document.getElementById("btn-run");
+  var exportBtn = document.getElementById("btn-export");
   var resetBtn = document.getElementById("btn-reset");
   var inventoryListEl = document.getElementById("inventory-list");
   var inventoryEmptyEl = document.getElementById("inventory-empty");
   var inventoryMetaEl = document.getElementById("inventory-meta");
-  var resultSizeBtn = document.getElementById("btn-copy-output-size");
+  var resultNameField = document.getElementById("result-name-field");
 
   var DEFAULTS = {
     sheetWidthIn: 23,
@@ -56,9 +57,11 @@
     lastSourceItems: [],
     resultSizeText: "",
     outputBoundsText: "",
-    sourceFolderLabel: ""
+    sourceFolderLabel: "",
+    resultNameManualOverride: false
   };
-  var resultSizeFeedbackTimer = null;
+  var resultNameFeedbackTimer = null;
+  var resultNameClickTimer = null;
 
   function byId(id) {
     return document.getElementById(id);
@@ -184,7 +187,8 @@
       lastSourceItems: state.lastSourceItems,
       resultSizeText: state.resultSizeText,
       outputBoundsText: state.outputBoundsText,
-      sourceFolderLabel: state.sourceFolderLabel
+      sourceFolderLabel: state.sourceFolderLabel,
+      resultNameManualOverride: state.resultNameManualOverride
     });
     return out;
   }
@@ -197,6 +201,10 @@
     window.__adobe_cep__.evalScript(script, function (result) {
       if (callback) callback(result);
     });
+  }
+
+  function alertUnexpectedHostResponse(rawResult) {
+    window.alert("Unexpected host response.\n\nRaw response:\n" + String(rawResult || ""));
   }
 
   function setFormValues(settings) {
@@ -285,10 +293,14 @@
     return parts.join("__");
   }
 
+  function buildAutoResultName(settings) {
+    return composeOutputNameText(state.outputBoundsText, state.sourceFolderLabel, settings);
+  }
+
   function setBusy(isBusy) {
     runBtn.disabled = isBusy;
+    if (exportBtn) exportBtn.disabled = isBusy || !getResultNameText();
     resetBtn.disabled = isBusy;
-    if (resultSizeBtn) resultSizeBtn.disabled = isBusy || !state.resultSizeText;
     runBtn.textContent = isBusy ? "Building..." : "NEST";
   }
 
@@ -313,23 +325,117 @@
     return fileCount + " files | " + placed + "/" + requested + " placed";
   }
 
-  function setResultSizeText(text) {
+  function getResultNameText() {
+    return state.resultSizeText ? String(state.resultSizeText) : "";
+  }
+
+  function syncResultNameFieldHeight() {
+    if (!resultNameField) return;
+    resultNameField.style.height = "auto";
+    resultNameField.style.height = Math.max(resultNameField.scrollHeight, 44) + "px";
+  }
+
+  function setResultSizeText(text, options) {
+    options = options || {};
     state.resultSizeText = text ? String(text) : "";
-    if (resultSizeFeedbackTimer) {
-      window.clearTimeout(resultSizeFeedbackTimer);
-      resultSizeFeedbackTimer = null;
+    if (!options.preserveManualState) {
+      state.resultNameManualOverride = Boolean(options.manualOverride);
     }
-    resultSizeBtn.classList.remove("is-copied");
-    resultSizeBtn.textContent = state.resultSizeText || "UVM__--";
-    resultSizeBtn.disabled = !state.resultSizeText;
+
+    if (resultNameFeedbackTimer) {
+      window.clearTimeout(resultNameFeedbackTimer);
+      resultNameFeedbackTimer = null;
+    }
+
+    if (resultNameField) {
+      resultNameField.classList.remove("is-copied");
+      resultNameField.value = state.resultSizeText || "UVM__--";
+      resultNameField.title = state.resultSizeText || "UVM__--";
+      syncResultNameFieldHeight();
+    }
+
+    if (exportBtn) exportBtn.disabled = !state.resultSizeText;
+  }
+
+  function applyOutputContext(context) {
+    if (!context || typeof context !== "object") return;
+    state.outputBoundsText = context.outputBoundsText ? String(context.outputBoundsText) : "";
+    state.sourceFolderLabel = context.sourceFolderLabel ? String(context.sourceFolderLabel) : "";
+  }
+
+  function applyAutoResultName(settings, context) {
+    if (context) applyOutputContext(context);
+
+    if (!state.outputBoundsText) {
+      setResultSizeText("", { manualOverride: false });
+      return "";
+    }
+
+    var nextText = buildAutoResultName(settings);
+    setResultSizeText(nextText, { manualOverride: false });
+    return nextText;
+  }
+
+  function sanitizeEditableResultName(text) {
+    return String(text || "")
+      .replace(/[\r\n\t]+/g, " ")
+      .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
+      .replace(/\s+/g, " ")
+      .replace(/[. ]+$/g, "")
+      .trim();
+  }
+
+  function isEditingResultName() {
+    return Boolean(resultNameField && resultNameField.classList.contains("is-editing"));
+  }
+
+  function exitResultNameEditMode() {
+    if (!resultNameField || !isEditingResultName()) return;
+
+    var nextText = sanitizeEditableResultName(resultNameField.value);
+    var autoText = buildAutoResultName(getFormValues());
+
+    if (!nextText) {
+      if (autoText) {
+        setResultSizeText(autoText, { manualOverride: false });
+      } else {
+        setResultSizeText("", { manualOverride: false });
+      }
+    } else {
+      setResultSizeText(nextText, { manualOverride: nextText !== autoText });
+    }
+
+    resultNameField.readOnly = true;
+    resultNameField.classList.remove("is-editing");
+    writeStoredSettings(buildStoredState(getFormValues()));
+  }
+
+  function enterResultNameEditMode() {
+    if (!resultNameField) return;
+    if (resultNameClickTimer) {
+      window.clearTimeout(resultNameClickTimer);
+      resultNameClickTimer = null;
+    }
+
+    resultNameField.setAttribute("data-edit-start", resultNameField.value || "");
+    resultNameField.readOnly = false;
+    resultNameField.classList.add("is-editing");
+    resultNameField.focus();
+    resultNameField.select();
+    syncResultNameFieldHeight();
+  }
+
+  function refreshOutputContext(callback) {
+    evalHost("nesterGetOutputContext()", function (result) {
+      var parsed = parseJsonSafe(result);
+      if (parsed && parsed.ok) applyOutputContext(parsed);
+      if (callback) callback(parsed);
+    });
   }
 
   function refreshOutputNameFromInputs() {
-    if (!state.outputBoundsText) {
-      setResultSizeText("");
-      return;
-    }
-    setResultSizeText(composeOutputNameText(state.outputBoundsText, state.sourceFolderLabel, getFormValues()));
+    if (state.resultNameManualOverride) return;
+    applyAutoResultName(getFormValues());
   }
 
   function copyTextToClipboard(text) {
@@ -360,14 +466,12 @@
   }
 
   function flashResultSizeCopied() {
-    if (!resultSizeBtn || !state.resultSizeText) return;
-    if (resultSizeFeedbackTimer) window.clearTimeout(resultSizeFeedbackTimer);
-    resultSizeBtn.classList.add("is-copied");
-    resultSizeBtn.textContent = state.resultSizeText + "  Copied";
-    resultSizeFeedbackTimer = window.setTimeout(function () {
-      resultSizeBtn.classList.remove("is-copied");
-      resultSizeBtn.textContent = state.resultSizeText || "UVM__--";
-      resultSizeFeedbackTimer = null;
+    if (!resultNameField || !getResultNameText()) return;
+    if (resultNameFeedbackTimer) window.clearTimeout(resultNameFeedbackTimer);
+    resultNameField.classList.add("is-copied");
+    resultNameFeedbackTimer = window.setTimeout(function () {
+      resultNameField.classList.remove("is-copied");
+      resultNameFeedbackTimer = null;
     }, 1100);
   }
 
@@ -439,6 +543,67 @@
     inventoryMetaEl.textContent = buildInventoryMeta(state.lastSourceItems);
   }
 
+  function refreshResultNameFromHostForAction(callback) {
+    var settings = getFormValues();
+    refreshOutputContext(function (parsed) {
+      if (!parsed) {
+        alertUnexpectedHostResponse("null");
+        if (callback) callback(false);
+        return;
+      }
+      if (!parsed.ok) {
+        window.alert("Error:\n" + parsed.error);
+        if (callback) callback(false);
+        return;
+      }
+
+      if (!state.resultNameManualOverride) applyAutoResultName(settings, parsed);
+      writeStoredSettings(buildStoredState(settings));
+      if (callback) callback(true, settings);
+    });
+  }
+
+  function runExport() {
+    exitResultNameEditMode();
+    var settings = getFormValues();
+    var exportName = getResultNameText();
+    if (!exportName) {
+      window.alert("No output name available to export.");
+      return;
+    }
+
+    var payload = JSON.stringify({ fileName: exportName });
+    var script = 'nesterExportOutputPngToSourceFolders("' + escapeForJsxString(payload) + '")';
+
+    setBusy(true);
+    evalHost(script, function (result) {
+      setBusy(false);
+
+      var parsed = parseJsonSafe(result);
+      if (!parsed) {
+        alertUnexpectedHostResponse(result);
+        return;
+      }
+      if (!parsed.ok) {
+        window.alert("Error:\n" + parsed.error);
+        return;
+      }
+
+      applyOutputContext(parsed);
+      writeStoredSettings(buildStoredState(settings));
+
+      var summary = [
+        "Exported PNG to " + String((parsed.exportedPaths && parsed.exportedPaths.length) || 0) + " folder(s)."
+      ];
+      if (parsed.overwrittenCount) summary.push("Overwritten: " + String(parsed.overwrittenCount));
+      if (parsed.failedPaths && parsed.failedPaths.length) {
+        summary.push("Failed:");
+        summary.push(parsed.failedPaths.join("\n"));
+      }
+      window.alert(summary.join("\n"));
+    });
+  }
+
   function runNester(settings) {
     var payload = JSON.stringify(settings);
     var script = 'nesterRunWithSettings("' + escapeForJsxString(payload) + '")';
@@ -448,7 +613,7 @@
       setBusy(false);
       var parsed = parseJsonSafe(result);
       if (!parsed) {
-        window.alert("Unexpected host response.");
+        alertUnexpectedHostResponse(result);
         return;
       }
       if (!parsed.ok) {
@@ -461,12 +626,8 @@
         renderInventory(parsed.sourceItems);
       }
 
-      state.outputBoundsText = parsed.outputBoundsText ? String(parsed.outputBoundsText) : "";
-      state.sourceFolderLabel = parsed.sourceFolderLabel ? String(parsed.sourceFolderLabel) : "";
-      setResultSizeText(
-        composeOutputNameText(state.outputBoundsText, state.sourceFolderLabel, settings) ||
-        (parsed.outputSizeText ? String(parsed.outputSizeText) : "")
-      );
+      applyOutputContext(parsed);
+      applyAutoResultName(settings);
       writeStoredSettings(buildStoredState(settings));
     });
   }
@@ -481,11 +642,12 @@
     state.outputBoundsText = stored.outputBoundsText ? String(stored.outputBoundsText) : "";
     state.sourceFolderLabel = stored.sourceFolderLabel ? String(stored.sourceFolderLabel) : "";
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
+    state.resultNameManualOverride = Boolean(stored.resultNameManualOverride);
 
     setFormValues(startSettings);
     renderInventory(state.lastSourceItems);
-    if (state.outputBoundsText) refreshOutputNameFromInputs();
-    else setResultSizeText(state.resultSizeText);
+    if (state.outputBoundsText && !state.resultNameManualOverride) refreshOutputNameFromInputs();
+    else setResultSizeText(state.resultSizeText, { manualOverride: state.resultNameManualOverride });
 
     inventoryListEl.addEventListener("input", function (evt) {
       var target = evt.target;
@@ -512,11 +674,48 @@
     formEl.addEventListener("input", handleNamingFieldUpdate);
     formEl.addEventListener("change", handleNamingFieldUpdate);
 
-    if (resultSizeBtn) {
-      resultSizeBtn.addEventListener("click", function () {
-        if (!state.resultSizeText) return;
-        copyTextToClipboard(state.resultSizeText);
-        flashResultSizeCopied();
+    if (resultNameField) {
+      resultNameField.addEventListener("click", function () {
+        if (isEditingResultName()) return;
+        if (resultNameClickTimer) window.clearTimeout(resultNameClickTimer);
+        resultNameClickTimer = window.setTimeout(function () {
+          resultNameClickTimer = null;
+          refreshResultNameFromHostForAction(function (ok) {
+            if (!ok) return;
+            var text = getResultNameText();
+            if (!text) return;
+            copyTextToClipboard(text);
+            flashResultSizeCopied();
+          });
+        }, 260);
+      });
+
+      resultNameField.addEventListener("dblclick", function () {
+        enterResultNameEditMode();
+      });
+
+      resultNameField.addEventListener("input", function () {
+        syncResultNameFieldHeight();
+      });
+
+      resultNameField.addEventListener("blur", function () {
+        exitResultNameEditMode();
+      });
+
+      resultNameField.addEventListener("keydown", function (evt) {
+        if (!isEditingResultName()) return;
+
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          resultNameField.blur();
+          return;
+        }
+
+        if (evt.key === "Escape") {
+          evt.preventDefault();
+          resultNameField.value = resultNameField.getAttribute("data-edit-start") || state.resultSizeText || "";
+          resultNameField.blur();
+        }
       });
     }
 
@@ -527,12 +726,20 @@
       runNester(settings);
     });
 
+    if (exportBtn) {
+      exportBtn.addEventListener("click", function () {
+        runExport();
+      });
+    }
+
     resetBtn.addEventListener("click", function () {
+      exitResultNameEditMode();
       setFormValues(combinedDefaults);
       state.quantityOverrides = {};
       renderInventory(state.lastSourceItems);
+      state.resultNameManualOverride = false;
       if (state.outputBoundsText) refreshOutputNameFromInputs();
-      else setResultSizeText("");
+      else setResultSizeText("", { manualOverride: false });
       writeStoredSettings(buildStoredState(combinedDefaults));
     });
   }

@@ -135,6 +135,21 @@ function getParentFolderName(pathOrName) {
     return (parts.length > 1) ? parts[parts.length - 2] : "";
 }
 
+function getParentFolderPath(pathOrName) {
+    var s = trimStr(pathOrName || "");
+    if (!s) return "";
+
+    try {
+        var f = new File(s);
+        if (f && f.parent) return String(f.parent.fsName || f.parent.fullName || "");
+    } catch (e1) {}
+
+    s = s.replace(/\\/g, "/");
+    if (s.charAt(s.length - 1) === "/") s = s.substring(0, s.length - 1);
+    var cut = s.lastIndexOf("/");
+    return (cut > 0) ? s.substring(0, cut) : "";
+}
+
 function getPreferredFolderLabel(pathOrName) {
     var s = trimStr(pathOrName || "");
     if (!s) return "";
@@ -177,6 +192,17 @@ function getItemFilePath(item) {
         if (item.file && item.file.fsName) return String(item.file.fsName);
     } catch (e1) {}
     return "";
+}
+
+function sanitizeExportBaseName(name) {
+    var s = trimStr(name || "");
+    s = s.replace(/\.png$/i, "");
+    s = s.replace(/[\r\n\t]+/g, " ");
+    s = s.replace(/[<>:"\/\\|?*]/g, "_");
+    s = s.replace(/\s+/g, " ");
+    s = s.replace(/[. ]+$/g, "");
+    s = trimStr(s);
+    return s || "NESTER_EXPORT";
 }
 
 function roundForKey(v) {
@@ -2483,6 +2509,13 @@ function setItemBottomRightByVisibleBounds(item, targetRight, targetBottom) {
     item.translate(dx, dy);
 }
 
+function setItemTopRightByVisibleBounds(item, targetRight, targetTop) {
+    var vb = item.visibleBounds;
+    var dx = targetRight - vb[2];
+    var dy = targetTop - vb[1];
+    item.translate(dx, dy);
+}
+
 function getLayerVisibleBounds(layer, ignoreMetaItems) {
     if (!layer || layer.pageItems.length === 0) return null;
 
@@ -2547,7 +2580,7 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
     if (!bounds) return null;
 
     var marginX = 4;
-    var marginBottom = 2;
+    var marginBottom = 4;
     var minFontSize = 13;
     var fontSize = 13;
     var availableWidth = Math.max(bounds.width - (marginX * 2), 24);
@@ -2586,7 +2619,8 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
     }
 
     try {
-        setItemBottomRightByVisibleBounds(tf, bounds.right - marginX, bounds.bottom + marginBottom);
+        // Put the full text box below the lowest artwork edge so it can never overlap placed objects.
+        setItemTopRightByVisibleBounds(tf, bounds.right - marginX, bounds.bottom - marginBottom);
     } catch (e8) {}
 
     return tf;
@@ -2761,6 +2795,114 @@ function buildOutputBoundsText(doc) {
     return inToStr(bounds.width) + "x" + inToStr(bounds.height) + "in";
 }
 
+function buildCurrentOutputContext(doc) {
+    var sources = [];
+    try { sources = collectPlacedItems(doc, null); } catch (e1) { sources = []; }
+
+    return {
+        outputBoundsText: buildOutputBoundsText(doc),
+        sourceFolderLabel: getSourceFolderLabel(sources)
+    };
+}
+
+function getSourceFolderPathsFromSources(sources) {
+    var out = [];
+    var seen = {};
+    if (!sources || !sources.length) return out;
+
+    for (var i = 0; i < sources.length; i++) {
+        var folderPath = getParentFolderPath(sources[i].filePath || "");
+        if (!folderPath) continue;
+        var seenKey = String(folderPath).toLowerCase();
+        if (seen[seenKey]) continue;
+        seen[seenKey] = true;
+        out.push(folderPath);
+    }
+
+    return out;
+}
+
+function createPngImageCaptureOptions300Dpi() {
+    var options = new ImageCaptureOptions();
+    options.antiAliasing = true;
+    options.transparency = true;
+    options.matte = false;
+    options.resolution = 300;
+    return options;
+}
+
+function withIsolatedOutputLayer(doc, callback) {
+    if (!doc || !callback) return null;
+
+    var snapshots = [];
+    for (var i = 0; i < doc.layers.length; i++) {
+        var layer = doc.layers[i];
+        snapshots.push({ layer: layer, visible: layer.visible });
+    }
+
+    try {
+        for (var j = 0; j < snapshots.length; j++) {
+            try {
+                snapshots[j].layer.visible = isOutputLayerName(snapshots[j].layer.name);
+            } catch (e1) {}
+        }
+        return callback();
+    } finally {
+        for (var k = 0; k < snapshots.length; k++) {
+            try { snapshots[k].layer.visible = snapshots[k].visible; } catch (e2) {}
+        }
+    }
+}
+
+function exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths) {
+    var outputLayer = findLayerByName(doc, OUTPUT_LAYER_NAME);
+    if (!outputLayer || outputLayer.pageItems.length === 0) {
+        throw new Error("No NEST_BUILD output found to export.");
+    }
+
+    var captureBounds = getLayerVisibleBounds(outputLayer, false);
+    if (!captureBounds) {
+        throw new Error("Could not resolve output bounds for export.");
+    }
+
+    var exportedPaths = [];
+    var failedPaths = [];
+    var overwrittenCount = 0;
+    var options = createPngImageCaptureOptions300Dpi();
+    var clipBounds = [captureBounds.left, captureBounds.top, captureBounds.right, captureBounds.bottom];
+
+    withIsolatedOutputLayer(doc, function () {
+        for (var i = 0; i < folderPaths.length; i++) {
+            var folderPath = folderPaths[i];
+            var folder = new Folder(folderPath);
+            if (!folder.exists) {
+                failedPaths.push(folderPath + " | Folder not found");
+                continue;
+            }
+
+            try {
+                var exportBasePath = folder.fsName + "/" + exportBaseName;
+                var existingPng = new File(exportBasePath + ".png");
+                if (existingPng.exists) {
+                    try { existingPng.remove(); } catch (e1) {}
+                    overwrittenCount += 1;
+                }
+
+                doc.imageCapture(existingPng, clipBounds, options);
+                exportedPaths.push(existingPng.fsName);
+            } catch (e2) {
+                failedPaths.push(folder.fsName + " | " + String(e2));
+            }
+        }
+    });
+
+    return {
+        exportedPaths: exportedPaths,
+        failedPaths: failedPaths,
+        overwrittenCount: overwrittenCount
+    };
+}
+
 function buildSearchMeta(result) {
     return {
         candidateCount: result.candidateCount,
@@ -2932,6 +3074,69 @@ function nesterGetDefaultSettings() {
         allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
         hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild
     });
+}
+
+function nesterGetOutputContext() {
+    var previousLevel = app.userInteractionLevel;
+    try {
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+
+        if (app.documents.length === 0) {
+            return _jsonStringify({ ok: false, error: "No open document found." });
+        }
+
+        var context = buildCurrentOutputContext(app.activeDocument);
+        return _jsonStringify({
+            ok: true,
+            outputBoundsText: context.outputBoundsText,
+            sourceFolderLabel: context.sourceFolderLabel
+        });
+    } catch (e) {
+        return _jsonStringify({ ok: false, error: String(e) });
+    } finally {
+        try { app.userInteractionLevel = previousLevel; } catch (_e) {}
+    }
+}
+
+function nesterExportOutputPngToSourceFolders(payloadJson) {
+    var previousLevel = app.userInteractionLevel;
+    try {
+        app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+
+        if (app.documents.length === 0) {
+            return _jsonStringify({ ok: false, error: "No open document found." });
+        }
+
+        var payload = null;
+        if (payloadJson !== undefined && payloadJson !== null && String(payloadJson) !== "") {
+            payload = _jsonParse(payloadJson);
+        }
+
+        var doc = app.activeDocument;
+        var sources = collectPlacedItems(doc, null);
+        var folderPaths = getSourceFolderPathsFromSources(sources);
+        if (!folderPaths.length) {
+            return _jsonStringify({ ok: false, error: "No source folders found from placed files." });
+        }
+
+        var exportBaseName = sanitizeExportBaseName(payload && payload.fileName ? payload.fileName : "");
+        var exportResult = exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths);
+        var context = buildCurrentOutputContext(doc);
+
+        return _jsonStringify({
+            ok: true,
+            fileName: exportBaseName,
+            outputBoundsText: context.outputBoundsText,
+            sourceFolderLabel: context.sourceFolderLabel,
+            exportedPaths: exportResult.exportedPaths,
+            failedPaths: exportResult.failedPaths,
+            overwrittenCount: exportResult.overwrittenCount
+        });
+    } catch (e) {
+        return _jsonStringify({ ok: false, error: String(e) });
+    } finally {
+        try { app.userInteractionLevel = previousLevel; } catch (_e) {}
+    }
 }
 
 // =====================================================
