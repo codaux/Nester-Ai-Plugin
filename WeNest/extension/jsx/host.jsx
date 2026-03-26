@@ -26,6 +26,8 @@ var EPS = 0.01;
 
 var OUTPUT_LAYER_NAME = "NEST_BUILD";
 var OUTPUT_LAYER_PREFIX = "NEST_BUILD";
+var OUTPUT_META_NOTE_PREFIX = "NESTER_META=";
+var OUTPUT_FOLDER_LABEL_META = "FOLDER_LABEL";
 
 var DEFAULTS = {
     sheetWidthIn: 23,
@@ -209,6 +211,17 @@ function clamp(v, minV, maxV) {
 
 function startsWith(str, prefix) {
     return String(str).indexOf(prefix) === 0;
+}
+
+function getOutputMetaNote(kind) {
+    return OUTPUT_META_NOTE_PREFIX + String(kind || "");
+}
+
+function isOutputMetaItem(item, kind) {
+    var note = "";
+    try { note = String(item.note || ""); } catch (e1) { note = ""; }
+    if (!note) return false;
+    return kind ? note === getOutputMetaNote(kind) : startsWith(note, OUTPUT_META_NOTE_PREFIX);
 }
 
 function cloneRect(r) {
@@ -2463,6 +2476,122 @@ function setItemTopLeftByVisibleBounds(item, targetLeft, targetTop) {
     item.translate(dx, dy);
 }
 
+function setItemBottomRightByVisibleBounds(item, targetRight, targetBottom) {
+    var vb = item.visibleBounds;
+    var dx = targetRight - vb[2];
+    var dy = targetBottom - vb[3];
+    item.translate(dx, dy);
+}
+
+function getLayerVisibleBounds(layer, ignoreMetaItems) {
+    if (!layer || layer.pageItems.length === 0) return null;
+
+    var left = null;
+    var top = null;
+    var right = null;
+    var bottom = null;
+
+    for (var i = 0; i < layer.pageItems.length; i++) {
+        var item = layer.pageItems[i];
+        if (ignoreMetaItems && isOutputMetaItem(item)) continue;
+
+        var vb;
+        try { vb = item.visibleBounds; } catch (e1) { vb = null; }
+        if (!vb) continue;
+
+        if (left === null || vb[0] < left) left = vb[0];
+        if (top === null || vb[1] > top) top = vb[1];
+        if (right === null || vb[2] > right) right = vb[2];
+        if (bottom === null || vb[3] < bottom) bottom = vb[3];
+    }
+
+    if (left === null || top === null || right === null || bottom === null) return null;
+
+    return {
+        left: left,
+        top: top,
+        right: right,
+        bottom: bottom,
+        width: Math.abs(right - left),
+        height: Math.abs(top - bottom)
+    };
+}
+
+function tryAssignThinTextFont(charAttrs) {
+    if (!charAttrs || !app.textFonts) return false;
+
+    var preferredFonts = [
+        "MyriadPro-Light",
+        "HelveticaNeue-Light",
+        "Aptos-Light",
+        "ArialMT"
+    ];
+
+    for (var i = 0; i < preferredFonts.length; i++) {
+        try {
+            charAttrs.textFont = app.textFonts.getByName(preferredFonts[i]);
+            return true;
+        } catch (e1) {}
+    }
+
+    return false;
+}
+
+function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
+    if (!doc || !outputLayer) return null;
+
+    var textValue = trimStr(folderLabel || "");
+    if (!textValue) return null;
+
+    var bounds = getLayerVisibleBounds(outputLayer, true);
+    if (!bounds) return null;
+
+    var marginX = 4;
+    var marginBottom = 2;
+    var minFontSize = 13;
+    var fontSize = 13;
+    var availableWidth = Math.max(bounds.width - (marginX * 2), 24);
+
+    var tf = null;
+    try { tf = doc.textFrames.add(); } catch (e1) { tf = null; }
+    if (!tf) return null;
+
+    tf.contents = textValue;
+    try { tf.move(outputLayer, ElementPlacement.PLACEATEND); } catch (e2) {}
+    try { tf.name = "NESTER_FOLDER_LABEL"; } catch (e3) {}
+    try { tf.note = getOutputMetaNote(OUTPUT_FOLDER_LABEL_META); } catch (e4) {}
+
+    try {
+        var attrs = tf.textRange.characterAttributes;
+        attrs.size = fontSize;
+        attrs.stroked = false;
+        attrs.filled = true;
+        tryAssignThinTextFont(attrs);
+
+        var fill = new GrayColor();
+        fill.gray = 100;
+        attrs.fillColor = fill;
+    } catch (e5) {}
+
+    for (var pass = 0; pass < 4; pass++) {
+        var vb = null;
+        try { vb = tf.visibleBounds; } catch (e6) { vb = null; }
+        if (!vb) break;
+
+        var width = Math.abs(vb[2] - vb[0]);
+        if (width <= availableWidth + EPS || fontSize <= minFontSize + EPS) break;
+
+        fontSize = Math.max(minFontSize, fontSize * (availableWidth / Math.max(width, EPS)));
+        try { tf.textRange.characterAttributes.size = fontSize; } catch (e7) { break; }
+    }
+
+    try {
+        setItemBottomRightByVisibleBounds(tf, bounds.right - marginX, bounds.bottom + marginBottom);
+    } catch (e8) {}
+
+    return tf;
+}
+
 function placeSingleCopy(refItem, targetLayer, x, y, rotationDeg, sourceKey) {
     var dup = duplicateToLayer(refItem, targetLayer);
     if (rotationDeg !== 0) dup.rotate(rotationDeg);
@@ -2526,6 +2655,7 @@ function renderPlacedBlocks(layoutState, outputLayer, settings) {
 function renderSolution(doc, result, settings) {
     var outputLayer = prepareOutputLayer(doc);
     renderPlacedBlocks(result.layout, outputLayer, settings);
+    addSourceFolderLabelText(doc, outputLayer, getSourceFolderLabel(result.sources));
     if (settings.hideSourceLayersAfterBuild) hideSourceLayers(doc);
 }
 
@@ -2625,28 +2755,10 @@ function buildOutputBoundsText(doc) {
     var layer = findLayerByName(doc, OUTPUT_LAYER_NAME);
     if (!layer || layer.pageItems.length === 0) return "";
 
-    var left = null;
-    var top = null;
-    var right = null;
-    var bottom = null;
+    var bounds = getLayerVisibleBounds(layer, true);
+    if (!bounds) return "";
 
-    for (var i = 0; i < layer.pageItems.length; i++) {
-        var item = layer.pageItems[i];
-        var vb;
-        try { vb = item.visibleBounds; } catch (e1) { vb = null; }
-        if (!vb) continue;
-
-        if (left === null || vb[0] < left) left = vb[0];
-        if (top === null || vb[1] > top) top = vb[1];
-        if (right === null || vb[2] > right) right = vb[2];
-        if (bottom === null || vb[3] < bottom) bottom = vb[3];
-    }
-
-    if (left === null || top === null || right === null || bottom === null) return "";
-
-    var width = Math.abs(right - left);
-    var height = Math.abs(top - bottom);
-    return inToStr(width) + "x" + inToStr(height) + "in";
+    return inToStr(bounds.width) + "x" + inToStr(bounds.height) + "in";
 }
 
 function buildSearchMeta(result) {
