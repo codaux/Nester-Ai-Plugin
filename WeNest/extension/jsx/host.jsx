@@ -2580,7 +2580,7 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
     if (!bounds) return null;
 
     var marginX = 4;
-    var marginBottom = 4;
+    var marginBottom = inToPt(0.25);
     var minFontSize = 13;
     var fontSize = 13;
     var availableWidth = Math.max(bounds.width - (marginX * 2), 24);
@@ -2619,7 +2619,7 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
     }
 
     try {
-        // Put the full text box below the lowest artwork edge so it can never overlap placed objects.
+        // Put the top edge of the full text box at least 0.25in below the lowest artwork edge.
         setItemTopRightByVisibleBounds(tf, bounds.right - marginX, bounds.bottom - marginBottom);
     } catch (e8) {}
 
