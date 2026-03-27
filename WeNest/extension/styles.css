@@ -307,7 +307,7 @@ button {
 }
 
 #btn-export {
-  background-image: linear-gradient(30deg, #70d6c3 0%, #a0770e 100%);
+  background-image: linear-gradient(30deg, #70d6c3 0%, #d4831f 100%);
 }
 
 button.secondary {
@@ -499,7 +499,7 @@ input.inventory-input {
   font-weight: 600;
   letter-spacing: 0.08em;
   color: #8ba1c9;
-  padding: 0 10px;
+  padding: 3px 6px;
   border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
 
@@ -508,12 +508,13 @@ input.inventory-input {
   min-width: 0;
   border: none;
   background: transparent;
-  color: #f5f8ff;
-  padding: 8px 6px 8px 10px;
+  color: #e0e6f4;
+  padding: 4px;
   font-size: 12px;
   flex: 1;
   text-align: center;
   letter-spacing: 0.02em;
+  overflow: visible;
 }
 
 .number-field input:focus,

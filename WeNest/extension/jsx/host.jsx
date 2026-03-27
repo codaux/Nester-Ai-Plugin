@@ -28,6 +28,9 @@ var OUTPUT_LAYER_NAME = "NEST_BUILD";
 var OUTPUT_LAYER_PREFIX = "NEST_BUILD";
 var OUTPUT_META_NOTE_PREFIX = "NESTER_META=";
 var OUTPUT_FOLDER_LABEL_META = "FOLDER_LABEL";
+var LAST_SOURCE_FOLDER_PATHS = [];
+var DIGITS_TYPE_ARABIC = 1684627826;
+var CHARACTER_DIRECTION_LTR = 1278366308;
 
 var DEFAULTS = {
     sheetWidthIn: 23,
@@ -113,6 +116,18 @@ function trimStr(s) {
     return String(s).replace(/^\s+|\s+$/g, "");
 }
 
+function normalizeAsciiDigits(value) {
+    return String(value || "")
+        .replace(/[\u0660-\u0669]/g, function(ch) { return String(ch.charCodeAt(0) - 1632); })
+        .replace(/[\u06F0-\u06F9]/g, function(ch) { return String(ch.charCodeAt(0) - 1776); });
+}
+
+function forceLtrDigitRuns(value) {
+    var text = normalizeAsciiDigits(value || "");
+    text = text.replace(/\d+/g, "\u200E$&\u200E");
+    return "\u200E" + text + "\u200E";
+}
+
 function stripExt(name) {
     var s = String(name);
     var i = s.lastIndexOf(".");
@@ -151,7 +166,7 @@ function getParentFolderPath(pathOrName) {
 }
 
 function getPreferredFolderLabel(pathOrName) {
-    var s = trimStr(pathOrName || "");
+    var s = normalizeAsciiDigits(trimStr(pathOrName || ""));
     if (!s) return "";
     s = s.replace(/\\/g, "/");
     if (s.charAt(s.length - 1) === "/") s = s.substring(0, s.length - 1);
@@ -168,9 +183,31 @@ function getPreferredFolderLabel(pathOrName) {
 }
 
 function isAcceptedSourceFolderLabel(label) {
-    var value = trimStr(label || "");
+    var value = normalizeAsciiDigits(trimStr(label || ""));
     if (!value) return false;
     return /^(?:.+_\d{4}|.+_\d{6}|\d{5})$/.test(value);
+}
+
+function sanitizeFolderPaths(paths) {
+    var out = [];
+    var seen = {};
+    if (!paths || !paths.length) return out;
+
+    for (var i = 0; i < paths.length; i++) {
+        var value = trimStr(paths[i] || "");
+        if (!value) continue;
+
+        var seenKey = String(value).toLowerCase();
+        if (seen[seenKey]) continue;
+        seen[seenKey] = true;
+        out.push(value);
+    }
+
+    return out;
+}
+
+function setLastSourceFolderPathsFromSources(sources) {
+    LAST_SOURCE_FOLDER_PATHS = sanitizeFolderPaths(getSourceFolderPathsFromSources(sources || []));
 }
 
 function parseQtyFromName(name) {
@@ -2560,9 +2597,8 @@ function tryAssignThinTextFont(charAttrs) {
     if (!charAttrs || !app.textFonts) return false;
 
     var preferredFonts = [
-        "SegoeUI-Light",
-        "Segoe UI Light",
-        "SegoeUI",
+        "Montserrat-Light",
+        "Montserrat Light",
         "MyriadPro-Light",
         "HelveticaNeue-Light",
         "Aptos-Light",
@@ -2579,10 +2615,24 @@ function tryAssignThinTextFont(charAttrs) {
     return false;
 }
 
+function forceFolderLabelDigitsLtr(tf) {
+    if (!tf || !tf.textRange) return;
+
+    try {
+        if (typeof LanguageType !== "undefined" && LanguageType.ENGLISHUSA !== undefined) {
+            tf.textRange.characterAttributes.language = LanguageType.ENGLISHUSA;
+        }
+    } catch (e1) {}
+
+    try { tf.textRange.characterAttributes.digitsType = DIGITS_TYPE_ARABIC; } catch (e2) {}
+    try { tf.textRange.characterAttributes.characterDirection = CHARACTER_DIRECTION_LTR; } catch (e3) {}
+    try { tf.textRange.characterAttributes.keyboardDirection = CHARACTER_DIRECTION_LTR; } catch (e4) {}
+}
+
 function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
     if (!doc || !outputLayer) return null;
 
-    var textValue = trimStr(folderLabel || "");
+    var textValue = forceLtrDigitRuns(trimStr(folderLabel || ""));
     if (!textValue) return null;
 
     var bounds = getLayerVisibleBounds(outputLayer, true);
@@ -2590,8 +2640,8 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
 
     var marginX = 4;
     var marginBottom = inToPt(0.25);
-    var minFontSize = 12;
-    var fontSize = 12;
+    var minFontSize = 11;
+    var fontSize = 11;
     var availableWidth = Math.max(bounds.width - (marginX * 2), 24);
 
     var tf = null;
@@ -2614,6 +2664,8 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
         fill.gray = 100;
         attrs.fillColor = fill;
     } catch (e5) {}
+
+    forceFolderLabelDigitsLtr(tf);
 
     for (var pass = 0; pass < 4; pass++) {
         var vb = null;
@@ -2819,7 +2871,7 @@ function buildCurrentOutputContext(doc) {
 
     return {
         outputBoundsText: buildOutputBoundsText(doc),
-        sourceFolderLabel: getSourceFolderLabel(sources)
+        sourceFolderLabel: normalizeAsciiDigits(getSourceFolderLabel(sources))
     };
 }
 
@@ -3185,10 +3237,10 @@ function nesterExportOutputPngToSourceFolders(payloadJson) {
         }
 
         var doc = app.activeDocument;
-        var folderPaths = [];
+        var folderPaths = sanitizeFolderPaths(LAST_SOURCE_FOLDER_PATHS);
         var seenFolderPaths = {};
 
-        if (payload && payload.folderPaths && payload.folderPaths.length) {
+        if (!folderPaths.length && payload && payload.folderPaths && payload.folderPaths.length) {
             for (var i = 0; i < payload.folderPaths.length; i++) {
                 var folderPath = trimStr(payload.folderPaths[i] || "");
                 if (!folderPath) continue;
@@ -3309,6 +3361,7 @@ function nesterRunWithSettings(settingsJson) {
 
         var settings = normalizeSettingsFromPanel(parsed);
         var result = buildOnce(app.activeDocument, settings);
+        setLastSourceFolderPathsFromSources(result.sources);
         var score = result.layout.score;
         var summary = buildSummary(result, settings);
         var searchMeta = buildSearchMeta(result);
@@ -3323,7 +3376,7 @@ function nesterRunWithSettings(settingsJson) {
             sourceItems: buildSourceQuantitySummary(result),
             sourceFolderPaths: getSourceFolderPathsFromSources(result.sources),
             outputBoundsText: buildOutputBoundsText(app.activeDocument),
-            sourceFolderLabel: getSourceFolderLabel(result.sources),
+            sourceFolderLabel: normalizeAsciiDigits(getSourceFolderLabel(result.sources)),
             outputSizeText: buildOutputBoundsText(app.activeDocument),
             candidateCount: result.candidateCount,
             winningStrategyName: result.winningStrategyName,
