@@ -333,7 +333,7 @@ button:disabled {
   min-width: 52px;
   border-radius: 6px;
   overflow: hidden;
-  background: linear-gradient(30deg, #f4f4f4 0%, #ecd8f0 100%);
+  background: linear-gradient(30deg, #f4f4f4 0%, #c6a8cd 100%);
   /* background-image: url("Back.png"); */
   border: 1px solid #324156;
   display: flex;

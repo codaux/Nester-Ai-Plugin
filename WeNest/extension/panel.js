@@ -330,11 +330,20 @@
     return composeOutputNameText(state.outputBoundsText, state.sourceFolderLabel, settings);
   }
 
-  function setBusy(isBusy) {
+  function setBusy(mode) {
+    var isNestBusy = mode === "nest";
+    var isExportBusy = mode === "export";
+    var isBusy = isNestBusy || isExportBusy;
+
     runBtn.disabled = isBusy;
-    if (exportBtn) exportBtn.disabled = isBusy || !getResultNameText();
+    runBtn.textContent = isNestBusy ? "Building..." : "NEST";
+
+    if (exportBtn) {
+      exportBtn.disabled = isBusy || !getResultNameText();
+      exportBtn.textContent = isExportBusy ? "Exporting..." : "EXPORT";
+    }
+
     resetBtn.disabled = isBusy;
-    runBtn.textContent = isBusy ? "Building..." : "NEST";
   }
 
   function syncQuantityOverridesFromResult(items) {
@@ -608,9 +617,9 @@
     var payload = JSON.stringify({ fileName: exportName });
     var script = 'nesterExportOutputPngToSourceFolders("' + escapeForJsxString(payload) + '")';
 
-    setBusy(true);
+    setBusy("export");
     evalHost(script, function (result) {
-      setBusy(false);
+      setBusy(null);
 
       var parsed = parseJsonSafe(result);
       if (!parsed) {
@@ -641,9 +650,9 @@
     var payload = JSON.stringify(settings);
     var script = 'nesterRunWithSettings("' + escapeForJsxString(payload) + '")';
 
-    setBusy(true);
+    setBusy("nest");
     evalHost(script, function (result) {
-      setBusy(false);
+      setBusy(null);
       var parsed = parseJsonSafe(result);
       if (!parsed) {
         alertUnexpectedHostResponse(result);
