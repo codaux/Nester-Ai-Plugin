@@ -13,6 +13,7 @@
   var inventoryEmptyEl = document.getElementById("inventory-empty");
   var inventoryMetaEl = document.getElementById("inventory-meta");
   var resultNameField = document.getElementById("result-name-field");
+  var panelFeedbackEl = document.getElementById("panel-feedback");
 
   var DEFAULTS = {
     sheetWidthIn: 23,
@@ -67,6 +68,7 @@
   };
   var resultNameFeedbackTimer = null;
   var resultNameClickTimer = null;
+  var panelFeedbackTimer = null;
 
   function byId(id) {
     return document.getElementById(id);
@@ -399,6 +401,35 @@
     if (exportBtn) exportBtn.disabled = !state.resultSizeText;
   }
 
+  function setPanelFeedback(message, tone, timeoutMs) {
+    if (!panelFeedbackEl) return;
+
+    if (panelFeedbackTimer) {
+      window.clearTimeout(panelFeedbackTimer);
+      panelFeedbackTimer = null;
+    }
+
+    if (!message) {
+      panelFeedbackEl.hidden = true;
+      panelFeedbackEl.textContent = "";
+      panelFeedbackEl.className = "panel-feedback";
+      return;
+    }
+
+    panelFeedbackEl.hidden = false;
+    panelFeedbackEl.textContent = String(message);
+    panelFeedbackEl.className = "panel-feedback" + (tone ? (" is-" + tone) : "");
+
+    if (timeoutMs && timeoutMs > 0) {
+      panelFeedbackTimer = window.setTimeout(function () {
+        panelFeedbackEl.hidden = true;
+        panelFeedbackEl.textContent = "";
+        panelFeedbackEl.className = "panel-feedback";
+        panelFeedbackTimer = null;
+      }, timeoutMs);
+    }
+  }
+
   function applyOutputContext(context) {
     if (!context || typeof context !== "object") return;
     state.outputBoundsText = context.outputBoundsText ? String(context.outputBoundsText) : "";
@@ -617,6 +648,7 @@
     var payload = JSON.stringify({ fileName: exportName });
     var script = 'nesterExportOutputPngToSourceFolders("' + escapeForJsxString(payload) + '")';
 
+    setPanelFeedback("");
     setBusy("export");
     evalHost(script, function (result) {
       setBusy(null);
@@ -631,18 +663,30 @@
         return;
       }
 
-      applyOutputContext(parsed);
       writeStoredSettings(buildStoredState(settings));
 
-      var summary = [
-        "Exported PNG to " + String((parsed.exportedPaths && parsed.exportedPaths.length) || 0) + " folder(s)."
-      ];
-      if (parsed.overwrittenCount) summary.push("Overwritten: " + String(parsed.overwrittenCount));
       if (parsed.failedPaths && parsed.failedPaths.length) {
+        setPanelFeedback(
+          "Export completed with " + String(parsed.failedPaths.length) + " failed path(s).",
+          "warning",
+          9000
+        );
+        var summary = [
+          "Export completed with warnings.",
+          "Exported to " + String((parsed.exportedPaths && parsed.exportedPaths.length) || 0) + " folder(s)."
+        ];
+        if (parsed.overwrittenCount) summary.push("Overwritten: " + String(parsed.overwrittenCount));
         summary.push("Failed:");
         summary.push(parsed.failedPaths.join("\n"));
+        window.alert(summary.join("\n"));
+        return;
       }
-      window.alert(summary.join("\n"));
+
+      var message = "Exported PNG to " + String((parsed.exportedPaths && parsed.exportedPaths.length) || 0) + " folder.";
+      if ((parsed.exportedPaths && parsed.exportedPaths.length) !== 1) message = message.replace(" folder.", " folders.");
+      if (parsed.overwrittenCount) message += " Replaced " + String(parsed.overwrittenCount) + " existing file.";
+      if (parsed.overwrittenCount > 1) message = message.replace(" existing file.", " existing files.");
+      setPanelFeedback(message, "success", 5200);
     });
   }
 
