@@ -2560,6 +2560,9 @@ function tryAssignThinTextFont(charAttrs) {
     if (!charAttrs || !app.textFonts) return false;
 
     var preferredFonts = [
+        "SegoeUI-Light",
+        "Segoe UI Light",
+        "SegoeUI",
         "MyriadPro-Light",
         "HelveticaNeue-Light",
         "Aptos-Light",
@@ -2587,8 +2590,8 @@ function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
 
     var marginX = 4;
     var marginBottom = inToPt(0.25);
-    var minFontSize = 13;
-    var fontSize = 13;
+    var minFontSize = 12;
+    var fontSize = 12;
     var availableWidth = Math.max(bounds.width - (marginX * 2), 24);
 
     var tf = null;
@@ -3182,7 +3185,22 @@ function nesterExportOutputPngToSourceFolders(payloadJson) {
         }
 
         var doc = app.activeDocument;
-        var folderPaths = getSourceFolderPathsFromDocument(doc);
+        var folderPaths = [];
+        var seenFolderPaths = {};
+
+        if (payload && payload.folderPaths && payload.folderPaths.length) {
+            for (var i = 0; i < payload.folderPaths.length; i++) {
+                var folderPath = trimStr(payload.folderPaths[i] || "");
+                if (!folderPath) continue;
+
+                var seenKey = String(folderPath).toLowerCase();
+                if (seenFolderPaths[seenKey]) continue;
+                seenFolderPaths[seenKey] = true;
+                folderPaths.push(folderPath);
+            }
+        }
+
+        if (!folderPaths.length) folderPaths = getSourceFolderPathsFromDocument(doc);
         if (!folderPaths.length) {
             return _jsonStringify({ ok: false, error: "No source folders found from placed files." });
         }
@@ -3303,6 +3321,7 @@ function nesterRunWithSettings(settingsJson) {
             unplacedCopies: countUnplacedCopies(result.layout),
             searchMeta: searchMeta,
             sourceItems: buildSourceQuantitySummary(result),
+            sourceFolderPaths: getSourceFolderPathsFromSources(result.sources),
             outputBoundsText: buildOutputBoundsText(app.activeDocument),
             sourceFolderLabel: getSourceFolderLabel(result.sources),
             outputSizeText: buildOutputBoundsText(app.activeDocument),

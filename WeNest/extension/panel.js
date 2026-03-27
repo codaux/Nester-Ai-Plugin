@@ -61,6 +61,7 @@
   var state = {
     quantityOverrides: {},
     lastSourceItems: [],
+    lastSourceFolderPaths: [],
     resultSizeText: "",
     outputBoundsText: "",
     sourceFolderLabel: "",
@@ -201,6 +202,22 @@
     return out;
   }
 
+  function sanitizeFolderPaths(paths) {
+    var out = [];
+    var seen = {};
+    if (!paths || !paths.length) return out;
+
+    for (var i = 0; i < paths.length; i++) {
+      var value = paths[i] ? String(paths[i]) : "";
+      var key = value.toLowerCase();
+      if (!value || seen[key]) continue;
+      seen[key] = true;
+      out.push(value);
+    }
+
+    return out;
+  }
+
   function readStoredSettings() {
     try {
       var raw = window.localStorage.getItem(STORAGE_KEY);
@@ -220,6 +237,7 @@
     var out = merge(settings, {
       quantityOverrides: state.quantityOverrides,
       lastSourceItems: state.lastSourceItems,
+      lastSourceFolderPaths: state.lastSourceFolderPaths,
       resultSizeText: state.resultSizeText,
       outputBoundsText: state.outputBoundsText,
       sourceFolderLabel: state.sourceFolderLabel,
@@ -645,7 +663,10 @@
       return;
     }
 
-    var payload = JSON.stringify({ fileName: exportName });
+    var payload = JSON.stringify({
+      fileName: exportName,
+      folderPaths: sanitizeFolderPaths(state.lastSourceFolderPaths)
+    });
     var script = 'nesterExportOutputPngToSourceFolders("' + escapeForJsxString(payload) + '")';
 
     setPanelFeedback("");
@@ -711,6 +732,7 @@
         syncQuantityOverridesFromResult(parsed.sourceItems);
         renderInventory(parsed.sourceItems);
       }
+      state.lastSourceFolderPaths = sanitizeFolderPaths(parsed.sourceFolderPaths);
 
       applyOutputContext(parsed);
       applyAutoResultName(settings);
@@ -725,6 +747,7 @@
 
     state.quantityOverrides = sanitizeQuantityOverrides(stored.quantityOverrides);
     state.lastSourceItems = sanitizeSourceItems(stored.lastSourceItems);
+    state.lastSourceFolderPaths = sanitizeFolderPaths(stored.lastSourceFolderPaths);
     state.outputBoundsText = stored.outputBoundsText ? String(stored.outputBoundsText) : "";
     state.sourceFolderLabel = stored.sourceFolderLabel ? String(stored.sourceFolderLabel) : "";
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
