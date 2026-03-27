@@ -81,19 +81,31 @@
             <label class="field">
               <div class="number-field">
                 <span class="input-knit">Date</span>
-                <input id="outputDate" type="number" min="1" max="31" step="1" />
+                <input id="outputDate" class="number-field-input" type="number" min="1" max="31" step="1" inputmode="numeric" />
+                <div class="number-stepper">
+                  <button class="number-stepper-btn" type="button" data-step-target="outputDate" data-step-dir="1" aria-label="Increase date"></button>
+                  <button class="number-stepper-btn" type="button" data-step-target="outputDate" data-step-dir="-1" aria-label="Decrease date"></button>
+                </div>
               </div>
             </label>
             <label class="field">
               <div class="number-field">
                 <span class="input-knit">Pcs</span>
-                <input id="outputPcCount" type="number" min="1" max="9" step="1" />
+                <input id="outputPcCount" class="number-field-input" type="number" min="1" max="9" step="1" inputmode="numeric" />
+                <div class="number-stepper">
+                  <button class="number-stepper-btn" type="button" data-step-target="outputPcCount" data-step-dir="1" aria-label="Increase pcs"></button>
+                  <button class="number-stepper-btn" type="button" data-step-target="outputPcCount" data-step-dir="-1" aria-label="Decrease pcs"></button>
+                </div>
               </div>
             </label>
             <label class="field">
               <div class="number-field">
                 <span class="input-knit">Choke</span>
-                <input id="outputChokeCount" type="number" min="1" max="8" step="1" />
+                <input id="outputChokeCount" class="number-field-input" type="number" min="1" max="8" step="1" inputmode="numeric" />
+                <div class="number-stepper">
+                  <button class="number-stepper-btn" type="button" data-step-target="outputChokeCount" data-step-dir="1" aria-label="Increase choke"></button>
+                  <button class="number-stepper-btn" type="button" data-step-target="outputChokeCount" data-step-dir="-1" aria-label="Decrease choke"></button>
+                </div>
               </div>
             </label>
           </div>

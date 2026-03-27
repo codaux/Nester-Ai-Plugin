@@ -51,6 +51,11 @@
     "outputPcCount",
     "outputChokeCount"
   ];
+  var STEPPER_FIELD_LIMITS = {
+    outputDate: { min: 1, max: 31 },
+    outputPcCount: { min: 1, max: 9 },
+    outputChokeCount: { min: 1, max: 8 }
+  };
 
   var state = {
     quantityOverrides: {},
@@ -65,6 +70,13 @@
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function createBubbledEvent(name) {
+    if (typeof Event === "function") return new Event(name, { bubbles: true });
+    var evt = document.createEvent("Event");
+    evt.initEvent(name, true, false);
+    return evt;
   }
 
   function hasCepBridge() {
@@ -129,6 +141,27 @@
     if (parsed < minValue) return minValue;
     if (parsed > maxValue) return maxValue;
     return parsed;
+  }
+
+  function findStepButton(node) {
+    while (node && node !== formEl) {
+      if (node.className && String(node.className).indexOf("number-stepper-btn") !== -1) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function stepNamingNumberField(input, direction) {
+    if (!input || !input.id) return;
+    var limits = STEPPER_FIELD_LIMITS[input.id];
+    if (!limits) return;
+
+    var currentValue = sanitizeCountInRange(input.value, limits.min, limits.max, DEFAULTS[input.id]);
+    var nextValue = sanitizeCountInRange(currentValue + direction, limits.min, limits.max, currentValue);
+    if (String(input.value) === String(nextValue)) return;
+
+    input.value = String(nextValue);
+    input.dispatchEvent(createBubbledEvent("input"));
   }
 
   function sanitizeQuantityOverrides(raw) {
@@ -671,6 +704,23 @@
       writeStoredSettings(buildStoredState(getFormValues()));
     }
 
+    formEl.addEventListener("mousedown", function (evt) {
+      if (findStepButton(evt.target)) evt.preventDefault();
+    });
+    formEl.addEventListener("click", function (evt) {
+      var button = findStepButton(evt.target);
+      var direction;
+      var input;
+      if (!button) return;
+
+      direction = Number(button.getAttribute("data-step-dir"));
+      if (direction !== 1 && direction !== -1) return;
+
+      input = byId(button.getAttribute("data-step-target"));
+      if (!input) return;
+
+      stepNamingNumberField(input, direction);
+    });
     formEl.addEventListener("input", handleNamingFieldUpdate);
     formEl.addEventListener("change", handleNamingFieldUpdate);
 

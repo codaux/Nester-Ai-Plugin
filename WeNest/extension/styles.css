@@ -446,13 +446,24 @@ input.inventory-input {
 .number-field {
   display: flex;
   align-items: center;
+  min-height: 34px;
   border: 1px solid #3b455a;
   border-radius: 10px;
   background: linear-gradient(180deg, #121625, #1a2435);
   overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.number-field:focus-within {
+  border-color: #607895;
+  box-shadow: 0 0 0 1px rgba(123, 162, 214, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .number-field .input-knit {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -461,27 +472,90 @@ input.inventory-input {
   border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.number-field input {
+.number-field input,
+.number-field-input {
+  min-width: 0;
   border: none;
   background: transparent;
   color: #f5f8ff;
-  padding: 8px;
+  padding: 8px 6px 8px 10px;
   font-size: 12px;
   flex: 1;
+  text-align: center;
+  letter-spacing: 0.02em;
 }
 
-.number-field input:focus {
+.number-field input:focus,
+.number-field-input:focus {
   outline: none;
 }
 
 .number-field input::-webkit-inner-spin-button,
-.number-field input::-webkit-outer-spin-button {
+.number-field input::-webkit-outer-spin-button,
+.number-field-input::-webkit-inner-spin-button,
+.number-field-input::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
-.number-field input[type="number"] {
+.number-field input[type="number"],
+.number-field-input[type="number"] {
   -moz-appearance: textfield;
+}
+
+.number-stepper {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  width: 24px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(6, 10, 18, 0.12));
+}
+
+.number-stepper-btn {
+  flex: 1 1 50%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.number-stepper-btn + .number-stepper-btn {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.number-stepper-btn:hover {
+  background: rgba(125, 150, 184, 0.12);
+}
+
+.number-stepper-btn:active {
+  background: rgba(125, 150, 184, 0.22);
+}
+
+.number-stepper-btn::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+
+.number-stepper-btn[data-step-dir="1"]::before {
+  border-bottom: 6px solid #a9bddb;
+  transform: translateY(-1px);
+}
+
+.number-stepper-btn[data-step-dir="-1"]::before {
+  border-top: 6px solid #a9bddb;
+  transform: translateY(1px);
 }
 
 .result-name-fields {
@@ -541,11 +615,11 @@ input.inventory-input {
   width: 100%;
   margin: 8px 0 0;
   padding: 7px 10px;
-  border: 1px dashed #4e6178;
+  border: 1.2px dashed #4e6178;
   border-radius: 10px;
   background: #151a24;
   color: #d7e1ec;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.35;
   white-space: normal;
   word-break: break-all;
