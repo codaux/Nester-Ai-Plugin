@@ -122,12 +122,6 @@ function normalizeAsciiDigits(value) {
         .replace(/[\u06F0-\u06F9]/g, function(ch) { return String(ch.charCodeAt(0) - 1776); });
 }
 
-function forceLtrDigitRuns(value) {
-    var text = normalizeAsciiDigits(value || "");
-    text = text.replace(/\d+/g, "\u200E$&\u200E");
-    return "\u200E" + text + "\u200E";
-}
-
 function stripExt(name) {
     var s = String(name);
     var i = s.lastIndexOf(".");
@@ -2632,7 +2626,7 @@ function forceFolderLabelDigitsLtr(tf) {
 function addSourceFolderLabelText(doc, outputLayer, folderLabel) {
     if (!doc || !outputLayer) return null;
 
-    var textValue = forceLtrDigitRuns(trimStr(folderLabel || ""));
+    var textValue = normalizeAsciiDigits(trimStr(folderLabel || ""));
     if (!textValue) return null;
 
     var bounds = getLayerVisibleBounds(outputLayer, true);

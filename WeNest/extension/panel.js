@@ -70,6 +70,7 @@
   var resultNameFeedbackTimer = null;
   var resultNameClickTimer = null;
   var panelFeedbackTimer = null;
+  var panelFeedbackHideTimer = null;
 
   function byId(id) {
     return document.getElementById(id);
@@ -161,6 +162,27 @@
 
     var currentValue = sanitizeCountInRange(input.value, limits.min, limits.max, DEFAULTS[input.id]);
     var nextValue = sanitizeCountInRange(currentValue + direction, limits.min, limits.max, currentValue);
+    if (String(input.value) === String(nextValue)) return;
+
+    input.value = String(nextValue);
+    input.dispatchEvent(createBubbledEvent("input"));
+  }
+
+  function findInventoryStepButton(node) {
+    while (node && node !== inventoryListEl) {
+      if (node.className && String(node.className).indexOf("inventory-stepper-btn") !== -1) return node;
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function stepInventoryQuantityInput(input, direction) {
+    var currentValue;
+    var nextValue;
+    if (!input || !input.getAttribute("data-source-key")) return;
+
+    currentValue = sanitizeQty(input.value, 1);
+    nextValue = sanitizeQty(currentValue + direction, currentValue);
     if (String(input.value) === String(nextValue)) return;
 
     input.value = String(nextValue);
@@ -426,23 +448,38 @@
       window.clearTimeout(panelFeedbackTimer);
       panelFeedbackTimer = null;
     }
+    if (panelFeedbackHideTimer) {
+      window.clearTimeout(panelFeedbackHideTimer);
+      panelFeedbackHideTimer = null;
+    }
 
     if (!message) {
-      panelFeedbackEl.hidden = true;
-      panelFeedbackEl.textContent = "";
       panelFeedbackEl.className = "panel-feedback";
+      panelFeedbackHideTimer = window.setTimeout(function () {
+        panelFeedbackEl.hidden = true;
+        panelFeedbackEl.textContent = "";
+        panelFeedbackEl.className = "panel-feedback";
+        panelFeedbackHideTimer = null;
+      }, 220);
       return;
     }
 
     panelFeedbackEl.hidden = false;
     panelFeedbackEl.textContent = String(message);
     panelFeedbackEl.className = "panel-feedback" + (tone ? (" is-" + tone) : "");
+    window.requestAnimationFrame(function () {
+      if (!panelFeedbackEl.hidden) panelFeedbackEl.className += " is-visible";
+    });
 
     if (timeoutMs && timeoutMs > 0) {
       panelFeedbackTimer = window.setTimeout(function () {
-        panelFeedbackEl.hidden = true;
-        panelFeedbackEl.textContent = "";
         panelFeedbackEl.className = "panel-feedback";
+        panelFeedbackHideTimer = window.setTimeout(function () {
+          panelFeedbackEl.hidden = true;
+          panelFeedbackEl.textContent = "";
+          panelFeedbackEl.className = "panel-feedback";
+          panelFeedbackHideTimer = null;
+        }, 220);
         panelFeedbackTimer = null;
       }, timeoutMs);
     }
@@ -618,6 +655,10 @@
               '<span class="inventory-arrow">&#x1F87A;</span>' +
               '<div class="inventory-input-wrap">' +
                 '<input class="inventory-input" type="number" min="1" step="1" value="' + qtyValue + '" data-source-key="' + escapeHtml(item.key) + '" />' +
+                '<div class="inventory-stepper">' +
+                  '<button class="inventory-stepper-btn" type="button" data-step-dir="1" aria-label="Increase quantity"></button>' +
+                  '<button class="inventory-stepper-btn" type="button" data-step-dir="-1" aria-label="Decrease quantity"></button>' +
+                '</div>' +
               '</div>' +
               '<span class="inventory-arrow">&#x1F87A;</span>' +
               '<span class="inventory-placed">' + escapeHtml(placedLabel) + '</span>' +
@@ -764,9 +805,23 @@
       state.quantityOverrides[target.getAttribute("data-source-key")] = sanitizeQty(target.value, 1);
       writeStoredSettings(buildStoredState(getFormValues()));
     });
+    inventoryListEl.addEventListener("mousedown", function (evt) {
+      if (findInventoryStepButton(evt.target)) evt.preventDefault();
+    });
     inventoryListEl.addEventListener("click", function (evt) {
       var target = evt.target;
+      var button = findInventoryStepButton(target);
+      var input;
+      var direction;
       if (!target) return;
+      if (button) {
+        direction = Number(button.getAttribute("data-step-dir"));
+        if (direction !== 1 && direction !== -1) return;
+        input = button.parentNode ? button.parentNode.parentNode.querySelector(".inventory-input") : null;
+        if (!input) return;
+        stepInventoryQuantityInput(input, direction);
+        return;
+      }
       if (target.tagName === "INPUT") return;
       var card = findCardElement(target);
       if (!card) return;
