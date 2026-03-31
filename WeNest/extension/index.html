@@ -123,16 +123,23 @@
         </div>
       </section>
 
-      <div class="actions actions-sticky actions-main">
-        <button id="btn-run" type="submit">NEST</button>
-        <button id="btn-export" type="button">EXPORT</button>
-        <button id="btn-reset" type="button" class="secondary">Reset Defaults</button>
+      <div class="actions-sticky">
+        <div class="actions actions-main">
+          <button id="btn-run" type="submit">NEST</button>
+          <div class="export-action">
+            <button id="btn-export" type="button">EXPORT</button>
+            <button id="btn-export-folder" type="button" class="icon-button" aria-label="Choose extra export folder" title="Choose extra export folder">
+              <img src="icons/folder.png" alt="" class="icon-button-img" />
+            </button>
+          </div>
+          <button id="btn-reset" type="button" class="secondary">Reset Defaults</button>
+        </div>
+        <div id="panel-feedback" class="panel-feedback" hidden aria-live="polite"></div>
       </div>
-      <div id="panel-feedback" class="panel-feedback" hidden aria-live="polite"></div>
     </form>
     <div class="actions footer-actions">
       <h3>Made by REZA @ WeMust</h3>
-      <h3>version 0.2.9</h3>
+      <h3>version 0.2.92</h3>
     </div>
   </main>
 

@@ -1341,16 +1341,47 @@ function estimateCavityPenaltyForPlacement(freeRect, pw, ph) {
     return penalty;
 }
 
-function blockFitsRect(block, rect, settings) {
+function getPlacementFootprint(x, y, contentW, contentH, settings) {
     var spacing = inToPt(settings.spacingIn);
-    var options = [{ rotatedOnSheet: false, w: block.blockW + spacing, h: block.blockH + spacing }];
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var maxLength = inToPt(settings.maxLengthIn);
+    var rightEdge = x + contentW;
+    var bottomEdge = y + contentH;
+    var rightGap = (rightEdge >= sheetWidth - EPS) ? 0 : spacing;
+    var bottomGap = (bottomEdge >= maxLength - EPS) ? 0 : spacing;
+
+    return {
+        x: x,
+        y: y,
+        contentW: contentW,
+        contentH: contentH,
+        w: contentW + rightGap,
+        h: contentH + bottomGap,
+        rightGap: rightGap,
+        bottomGap: bottomGap
+    };
+}
+
+function blockFitsRect(block, rect, settings) {
+    var options = [{ rotatedOnSheet: false, contentW: block.blockW, contentH: block.blockH }];
 
     if (settings.allowBlockRotationOnSheet) {
-        options.push({ rotatedOnSheet: true, w: block.blockH + spacing, h: block.blockW + spacing });
+        options.push({ rotatedOnSheet: true, contentW: block.blockH, contentH: block.blockW });
     }
 
     for (var i = 0; i < options.length; i++) {
-        if (options[i].w <= rect.w + EPS && options[i].h <= rect.h + EPS) return options[i];
+        var footprint = getPlacementFootprint(rect.x, rect.y, options[i].contentW, options[i].contentH, settings);
+        if (footprint.w <= rect.w + EPS && footprint.h <= rect.h + EPS) {
+            return {
+                rotatedOnSheet: options[i].rotatedOnSheet,
+                contentW: options[i].contentW,
+                contentH: options[i].contentH,
+                w: footprint.w,
+                h: footprint.h,
+                rightGap: footprint.rightGap,
+                bottomGap: footprint.bottomGap
+            };
+        }
     }
     return null;
 }
@@ -1429,7 +1460,6 @@ function computePlacementScore(freeRect, pw, ph, currentUsedLength, placedSoFar,
 }
 
 function findBestPlacementForBlock(block, freeRects, currentUsedLength, placedSoFar, settings, personality, effortConfig, remainingBlocks, preferredRect) {
-    var spacing = inToPt(settings.spacingIn);
     var orientations = [{ rotatedOnSheet: false, w: block.blockW, h: block.blockH }];
 
     if (settings.allowBlockRotationOnSheet) {
@@ -1440,8 +1470,6 @@ function findBestPlacementForBlock(block, freeRects, currentUsedLength, placedSo
 
     for (var o = 0; o < orientations.length; o++) {
         var ori = orientations[o];
-        var paddedW = ori.w + spacing;
-        var paddedH = ori.h + spacing;
 
         for (var i = 0; i < freeRects.length; i++) {
             var fr = freeRects[i];
@@ -1452,6 +1480,9 @@ function findBestPlacementForBlock(block, freeRects, currentUsedLength, placedSo
                 Math.abs(fr.h - preferredRect.h) > EPS
             )) continue;
 
+            var footprint = getPlacementFootprint(fr.x, fr.y, ori.w, ori.h, settings);
+            var paddedW = footprint.w;
+            var paddedH = footprint.h;
             if (paddedW > fr.w + EPS || paddedH > fr.h + EPS) continue;
 
             var score = computePlacementScore(
@@ -1597,10 +1628,9 @@ function runBasicBackfill(layoutState, settings, personality, effortConfig, stag
 // =====================================================
 
 function getRequiredPlacedRect(placedBlock, settings) {
-    var spacing = inToPt(settings.spacingIn);
     var w = placedBlock.rotatedOnSheet ? placedBlock.block.blockH : placedBlock.block.blockW;
     var h = placedBlock.rotatedOnSheet ? placedBlock.block.blockW : placedBlock.block.blockH;
-    return { x: placedBlock.x, y: placedBlock.y, w: w + spacing, h: h + spacing };
+    return getPlacementFootprint(placedBlock.x, placedBlock.y, w, h, settings);
 }
 
 function buildLooseFitCandidates(layoutState, sourcePlanCache) {
@@ -3234,7 +3264,11 @@ function nesterExportOutputPngToSourceFolders(payloadJson) {
         var folderPaths = sanitizeFolderPaths(LAST_SOURCE_FOLDER_PATHS);
         var seenFolderPaths = {};
 
-        if (!folderPaths.length && payload && payload.folderPaths && payload.folderPaths.length) {
+        for (var s = 0; s < folderPaths.length; s++) {
+            seenFolderPaths[String(folderPaths[s]).toLowerCase()] = true;
+        }
+
+        if (payload && payload.folderPaths && payload.folderPaths.length) {
             for (var i = 0; i < payload.folderPaths.length; i++) {
                 var folderPath = trimStr(payload.folderPaths[i] || "");
                 if (!folderPath) continue;

@@ -8,6 +8,7 @@
   var formEl = document.getElementById("settings-form");
   var runBtn = document.getElementById("btn-run");
   var exportBtn = document.getElementById("btn-export");
+  var exportFolderBtn = document.getElementById("btn-export-folder");
   var resetBtn = document.getElementById("btn-reset");
   var inventoryListEl = document.getElementById("inventory-list");
   var inventoryEmptyEl = document.getElementById("inventory-empty");
@@ -62,6 +63,7 @@
     quantityOverrides: {},
     lastSourceItems: [],
     lastSourceFolderPaths: [],
+    extraExportFolderPath: "",
     resultSizeText: "",
     outputBoundsText: "",
     sourceFolderLabel: "",
@@ -260,6 +262,7 @@
       quantityOverrides: state.quantityOverrides,
       lastSourceItems: state.lastSourceItems,
       lastSourceFolderPaths: state.lastSourceFolderPaths,
+      extraExportFolderPath: state.extraExportFolderPath,
       resultSizeText: state.resultSizeText,
       outputBoundsText: state.outputBoundsText,
       sourceFolderLabel: state.sourceFolderLabel,
@@ -372,6 +375,55 @@
     return composeOutputNameText(state.outputBoundsText, state.sourceFolderLabel, settings);
   }
 
+  function getPathLeaf(path) {
+    var normalized = String(path || "").replace(/[\\/]+/g, "/").replace(/\/$/, "");
+    if (!normalized) return "";
+    var parts = normalized.split("/");
+    return parts[parts.length - 1] || normalized;
+  }
+
+  function updateExtraExportFolderButton() {
+    if (!exportFolderBtn) return;
+    var hasExtraFolder = Boolean(state.extraExportFolderPath);
+    if (exportFolderBtn.classList) exportFolderBtn.classList.toggle("is-selected", hasExtraFolder);
+
+    if (!hasExtraFolder) {
+      exportFolderBtn.title = "Choose extra export folder";
+      return;
+    }
+
+    exportFolderBtn.title = "Extra export folder: " + String(state.extraExportFolderPath) + "\nClick to choose a different folder.";
+  }
+
+  function chooseExtraExportFolder() {
+    if (!hasCepBridge() || !window.cep || !window.cep.fs || typeof window.cep.fs.showOpenDialogEx !== "function") {
+      setPanelFeedback("Modern folder picker is not available in this host.", "warning", 3600);
+      return;
+    }
+
+    var selected = null;
+    try {
+      selected = window.cep.fs.showOpenDialogEx(
+        false,
+        true,
+        "Select extra export folder",
+        state.extraExportFolderPath || ""
+      );
+    } catch (_e) {
+      selected = null;
+    }
+
+    var pickedPath = "";
+    if (selected && typeof selected.data === "string") pickedPath = selected.data;
+    else if (selected && selected.data && selected.data.length) pickedPath = String(selected.data[0] || "");
+    if (!pickedPath) return;
+
+    state.extraExportFolderPath = pickedPath;
+    updateExtraExportFolderButton();
+    writeStoredSettings(buildStoredState(getFormValues()));
+    setPanelFeedback("Extra export folder set to " + getPathLeaf(pickedPath) + ".", "success", 2200);
+  }
+
   function setBusy(mode) {
     var isNestBusy = mode === "nest";
     var isExportBusy = mode === "export";
@@ -384,6 +436,7 @@
       exportBtn.disabled = isBusy || !getResultNameText();
       exportBtn.textContent = isExportBusy ? "Exporting..." : "EXPORT";
     }
+    if (exportFolderBtn) exportFolderBtn.disabled = isBusy;
 
     resetBtn.disabled = isBusy;
   }
@@ -706,7 +759,9 @@
 
     var payload = JSON.stringify({
       fileName: exportName,
-      folderPaths: sanitizeFolderPaths(state.lastSourceFolderPaths)
+      folderPaths: sanitizeFolderPaths(
+        state.lastSourceFolderPaths.concat(state.extraExportFolderPath ? [state.extraExportFolderPath] : [])
+      )
     });
     var script = 'nesterExportOutputPngToSourceFolders("' + escapeForJsxString(payload) + '")';
 
@@ -789,12 +844,14 @@
     state.quantityOverrides = sanitizeQuantityOverrides(stored.quantityOverrides);
     state.lastSourceItems = sanitizeSourceItems(stored.lastSourceItems);
     state.lastSourceFolderPaths = sanitizeFolderPaths(stored.lastSourceFolderPaths);
+    state.extraExportFolderPath = stored.extraExportFolderPath ? String(stored.extraExportFolderPath) : "";
     state.outputBoundsText = stored.outputBoundsText ? String(stored.outputBoundsText) : "";
     state.sourceFolderLabel = stored.sourceFolderLabel ? String(stored.sourceFolderLabel) : "";
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
     state.resultNameManualOverride = Boolean(stored.resultNameManualOverride);
 
     setFormValues(startSettings);
+    updateExtraExportFolderButton();
     renderInventory(state.lastSourceItems);
     if (state.outputBoundsText && !state.resultNameManualOverride) refreshOutputNameFromInputs();
     else setResultSizeText(state.resultSizeText, { manualOverride: state.resultNameManualOverride });
@@ -912,6 +969,11 @@
         runExport();
       });
     }
+    if (exportFolderBtn) {
+      exportFolderBtn.addEventListener("click", function () {
+        chooseExtraExportFolder();
+      });
+    }
 
     resetBtn.addEventListener("click", function () {
       exitResultNameEditMode();
@@ -919,6 +981,7 @@
       state.quantityOverrides = {};
       renderInventory(state.lastSourceItems);
       state.resultNameManualOverride = false;
+      updateExtraExportFolderButton();
       if (state.outputBoundsText) refreshOutputNameFromInputs();
       else setResultSizeText("", { manualOverride: false });
       writeStoredSettings(buildStoredState(combinedDefaults));
