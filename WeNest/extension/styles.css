@@ -1,9 +1,15 @@
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
-html, body {
+html,
+body {
   margin: 0;
   height: 100%;
-  font: 12px/1.35 "Segoe UI", Tahoma, sans-serif;
+  font:
+    12px/1.35 "Segoe UI",
+    Tahoma,
+    sans-serif;
   background: #111016;
   color: #f5f5f5;
   -webkit-user-select: none;
@@ -229,7 +235,10 @@ select {
   background: #141a24;
   color: #a9b8cb;
   line-height: 1;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .check-grid input:checked + span {
@@ -278,8 +287,13 @@ select {
   display: block;
   margin-top: auto;
   padding-top: 8px;
-  padding-bottom: 2px;
-  background: linear-gradient(180deg, rgba(17, 16, 22, 0) 0%, rgba(17, 16, 22, 0.94) 28%, rgba(17, 16, 22, 1) 100%);
+  /* padding-bottom: 2px; */
+  background: linear-gradient(
+    180deg,
+    rgba(17, 16, 22, 0) 0%,
+    rgba(17, 16, 22, 0.94) 28%,
+    rgba(17, 16, 22, 1) 100%
+  );
 }
 
 .panel-feedback {
@@ -301,7 +315,9 @@ select {
   pointer-events: none;
   opacity: 0;
   transform: translateY(14px);
-  transition: opacity 380ms ease, transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    opacity 380ms ease,
+    transform 620ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .panel-feedback.is-visible {
@@ -333,7 +349,11 @@ button {
   border: none;
   border-radius: 14px;
   font-size: 11px;
-  background-image: linear-gradient(30deg, #17e17c -7%, hsl(252, 100%, 80%) 60%);
+  background-image: linear-gradient(
+    30deg,
+    #17e17c -7%,
+    hsl(252, 100%, 80%) 60%
+  );
   color: #ffffff;
   cursor: pointer;
 }
@@ -341,7 +361,7 @@ button {
 #btn-export {
   background-image: linear-gradient(30deg, #e1b517 -7%, hsl(112, 56%, 39%) 60%);
   padding-left: 15px;
-  overflow:hidden;
+  overflow: hidden;
 }
 
 .export-action > #btn-export,
@@ -392,7 +412,7 @@ button {
   object-fit: contain;
   padding-bottom: 2px;
   display: block;
-  mix-blend-mode:overlay;
+  mix-blend-mode: overlay;
   opacity: 0.5;
 }
 
@@ -582,7 +602,11 @@ input.inventory-input {
   align-self: stretch;
   width: 24px;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(6, 10, 18, 0.12));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.03),
+    rgba(6, 10, 18, 0.12)
+  );
 }
 
 .inventory-stepper-btn {
@@ -639,12 +663,16 @@ input.inventory-input {
   background: linear-gradient(180deg, #121625, #1a2435);
   overflow: hidden;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
 }
 
 .number-field:focus-within {
   border-color: #607895;
-  box-shadow: 0 0 0 1px rgba(123, 162, 214, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 0 0 1px rgba(123, 162, 214, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .number-field .input-knit {
@@ -697,7 +725,11 @@ input.inventory-input {
   align-self: stretch;
   width: 24px;
   border-left: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(6, 10, 18, 0.12));
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.03),
+    rgba(6, 10, 18, 0.12)
+  );
 }
 
 .number-stepper-btn {
@@ -785,7 +817,10 @@ input.inventory-input {
   color: #a9b8cb;
   font-size: 11px;
   line-height: 1;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
 }
 
 .tag-pill input:checked + span {

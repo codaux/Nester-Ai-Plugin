@@ -430,7 +430,7 @@
     var isBusy = isNestBusy || isExportBusy;
 
     runBtn.disabled = isBusy;
-    runBtn.textContent = isNestBusy ? "Building..." : "NEST";
+    runBtn.textContent = isNestBusy ? "NESTING..." : "NEST";
 
     if (exportBtn) {
       exportBtn.disabled = isBusy || !getResultNameText();
