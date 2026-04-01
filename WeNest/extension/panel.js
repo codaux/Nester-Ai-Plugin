@@ -9,6 +9,7 @@
   var runBtn = document.getElementById("btn-run");
   var exportBtn = document.getElementById("btn-export");
   var exportFolderBtn = document.getElementById("btn-export-folder");
+  var regenerateNameBtn = document.getElementById("btn-regenerate-name");
   var resetBtn = document.getElementById("btn-reset");
   var inventoryListEl = document.getElementById("inventory-list");
   var inventoryEmptyEl = document.getElementById("inventory-empty");
@@ -16,12 +17,13 @@
   var resultNameField = document.getElementById("result-name-field");
   var panelFeedbackEl = document.getElementById("panel-feedback");
 
+  var RESULT_NAME_SIZE_TOKEN = "{SIZE}";
   var DEFAULTS = {
     sheetWidthIn: 23,
     maxLengthIn: 100,
     spacingIn: 0.25,
     optimizePreset: "Auto",
-    searchEffort: "Normal",
+    searchEffort: "High",
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
     outputDate: today,
@@ -31,8 +33,11 @@
     tagOverNight: false,
     tagPurolator: false,
     tagGLS: false,
+    tagINTERNAL: false,
+    tagREPRINT: false,
     outputPcCount: 1,
-    outputChokeCount: 6
+    outputChokeCount: 6,
+    outputPartCount: 0
   };
 
   var FIELD_IDS = [
@@ -50,13 +55,17 @@
     "tagOverNight",
     "tagPurolator",
     "tagGLS",
+    "tagINTERNAL",
+    "tagREPRINT",
     "outputPcCount",
-    "outputChokeCount"
+    "outputChokeCount",
+    "outputPartCount"
   ];
   var STEPPER_FIELD_LIMITS = {
     outputDate: { min: 1, max: 31 },
     outputPcCount: { min: 1, max: 9 },
-    outputChokeCount: { min: 1, max: 8 }
+    outputChokeCount: { min: 1, max: 8 },
+    outputPartCount: { min: 0, max: 9 }
   };
 
   var state = {
@@ -67,7 +76,8 @@
     resultSizeText: "",
     outputBoundsText: "",
     sourceFolderLabel: "",
-    resultNameManualOverride: false
+    resultNameManualOverride: false,
+    resultNameTemplateText: ""
   };
   var resultNameFeedbackTimer = null;
   var resultNameClickTimer = null;
@@ -266,7 +276,8 @@
       resultSizeText: state.resultSizeText,
       outputBoundsText: state.outputBoundsText,
       sourceFolderLabel: state.sourceFolderLabel,
-      resultNameManualOverride: state.resultNameManualOverride
+      resultNameManualOverride: state.resultNameManualOverride,
+      resultNameTemplateText: state.resultNameTemplateText
     });
     return out;
   }
@@ -294,6 +305,7 @@
       else if (id === "outputDate") el.value = String(sanitizeCountInRange(settings[id], 1, 31, DEFAULTS.outputDate));
       else if (id === "outputPcCount") el.value = String(sanitizeCountInRange(settings[id], 1, 9, DEFAULTS.outputPcCount));
       else if (id === "outputChokeCount") el.value = String(sanitizeCountInRange(settings[id], 1, 8, DEFAULTS.outputChokeCount));
+      else if (id === "outputPartCount") el.value = String(sanitizeCountInRange(settings[id], 0, 9, DEFAULTS.outputPartCount));
       else el.value = String(settings[id]);
     }
   }
@@ -321,6 +333,7 @@
       else if (id === "outputDate") settings[id] = sanitizeCountInRange(el.value, 1, 31, DEFAULTS.outputDate);
       else if (id === "outputPcCount") settings[id] = sanitizeCountInRange(el.value, 1, 9, DEFAULTS.outputPcCount);
       else if (id === "outputChokeCount") settings[id] = sanitizeCountInRange(el.value, 1, 8, DEFAULTS.outputChokeCount);
+      else if (id === "outputPartCount") settings[id] = sanitizeCountInRange(el.value, 0, 9, DEFAULTS.outputPartCount);
       else if (el.type === "number") settings[id] = Number(el.value);
       else settings[id] = el.value;
     }
@@ -338,19 +351,18 @@
       id === "tagOverNight" ||
       id === "tagPurolator" ||
       id === "tagGLS" ||
+      id === "tagINTERNAL" ||
+      id === "tagREPRINT" ||
       id === "outputPcCount" ||
-      id === "outputChokeCount";
+      id === "outputChokeCount" ||
+      id === "outputPartCount";
   }
 
-  function composeOutputNameText(boundsText, folderLabel, settings) {
-    if (!boundsText) return "";
-
+  function buildOutputPrefixSegment(settings) {
     var prefixParts = [
       "UVM",
       String(sanitizeCountInRange(settings.outputDate, 1, 31, DEFAULTS.outputDate))
     ];
-    var pcCount = sanitizeCountInRange(settings.outputPcCount, 1, 9, DEFAULTS.outputPcCount);
-    var chokeCount = sanitizeCountInRange(settings.outputChokeCount, 1, 8, DEFAULTS.outputChokeCount);
 
     if (settings.tagUSA) prefixParts.push("USA");
     if (settings.tagRUSH) prefixParts.push("RUSH");
@@ -359,15 +371,34 @@
     if (settings.tagPurolator) prefixParts.push("Purolator");
     if (settings.tagGLS) prefixParts.push("GLS");
 
+    var partCount = sanitizeCountInRange(settings.outputPartCount, 0, 9, DEFAULTS.outputPartCount);
+    if (partCount > 0) prefixParts.push("P" + String(partCount));
+
+    return prefixParts.join("_");
+  }
+
+  function buildOutputSizeSegment(boundsText) {
+    if (!boundsText) return "";
+    return String(boundsText);
+  }
+
+  function composeOutputNameText(boundsText, folderLabel, settings) {
+    if (!boundsText) return "";
+
+    var pcCount = sanitizeCountInRange(settings.outputPcCount, 1, 9, DEFAULTS.outputPcCount);
+    var chokeCount = sanitizeCountInRange(settings.outputChokeCount, 1, 8, DEFAULTS.outputChokeCount);
+
     var parts = [
-      prefixParts.join("_"),
-      String(boundsText),
+      buildOutputPrefixSegment(settings),
+      buildOutputSizeSegment(boundsText),
       String(pcCount) + (pcCount > 1 ? "pcs" : "pc")
     ];
 
     if (chokeCount !== 6) parts.push(String(chokeCount) + "Choke");
 
     if (folderLabel) parts.push(String(folderLabel));
+    if (settings.tagINTERNAL) parts.push("INTERNAL");
+    if (settings.tagREPRINT) parts.push("REPRINT");
     return parts.join("__");
   }
 
@@ -437,6 +468,7 @@
       exportBtn.textContent = isExportBusy ? "Exporting..." : "EXPORT";
     }
     if (exportFolderBtn) exportFolderBtn.disabled = isBusy;
+    if (regenerateNameBtn) regenerateNameBtn.disabled = isBusy || !state.outputBoundsText;
 
     resetBtn.disabled = isBusy;
   }
@@ -466,6 +498,13 @@
     return state.resultSizeText ? String(state.resultSizeText) : "";
   }
 
+  function updateResultNameRegenerateButton() {
+    if (!regenerateNameBtn) return;
+
+    regenerateNameBtn.disabled = !state.outputBoundsText;
+    regenerateNameBtn.classList.toggle("is-active", Boolean(state.resultNameManualOverride && state.outputBoundsText));
+  }
+
   function syncResultNameFieldHeight() {
     if (!resultNameField) return;
     resultNameField.style.height = "auto";
@@ -477,6 +516,11 @@
     state.resultSizeText = text ? String(text) : "";
     if (!options.preserveManualState) {
       state.resultNameManualOverride = Boolean(options.manualOverride);
+    }
+    if (Object.prototype.hasOwnProperty.call(options, "templateText")) {
+      state.resultNameTemplateText = options.templateText ? String(options.templateText) : "";
+    } else if (!state.resultNameManualOverride && !options.preserveTemplateState) {
+      state.resultNameTemplateText = "";
     }
 
     if (resultNameFeedbackTimer) {
@@ -491,6 +535,7 @@
       syncResultNameFieldHeight();
     }
 
+    updateResultNameRegenerateButton();
     if (exportBtn) exportBtn.disabled = !state.resultSizeText;
   }
 
@@ -542,19 +587,91 @@
     if (!context || typeof context !== "object") return;
     state.outputBoundsText = context.outputBoundsText ? String(context.outputBoundsText) : "";
     state.sourceFolderLabel = context.sourceFolderLabel ? String(context.sourceFolderLabel) : "";
+    updateResultNameRegenerateButton();
   }
 
   function applyAutoResultName(settings, context) {
     if (context) applyOutputContext(context);
 
     if (!state.outputBoundsText) {
-      setResultSizeText("", { manualOverride: false });
+      setResultSizeText("", { manualOverride: false, templateText: "" });
       return "";
     }
 
     var nextText = buildAutoResultName(settings);
-    setResultSizeText(nextText, { manualOverride: false });
+    setResultSizeText(nextText, { manualOverride: false, templateText: "" });
     return nextText;
+  }
+
+  function applyResultNameTemplate(templateText, settings) {
+    var safeTemplate = String(templateText || "");
+    if (!safeTemplate) return "";
+
+    var sizeText = buildOutputSizeSegment(state.outputBoundsText);
+    if (!sizeText || safeTemplate.indexOf(RESULT_NAME_SIZE_TOKEN) === -1) return safeTemplate;
+    return safeTemplate.split(RESULT_NAME_SIZE_TOKEN).join(sizeText);
+  }
+
+  function applyManualResultName(settings, templateText) {
+    var safeTemplate = sanitizeEditableResultName(templateText);
+    var rendered = sanitizeEditableResultName(applyResultNameTemplate(safeTemplate, settings));
+    setResultSizeText(rendered, { manualOverride: true, templateText: safeTemplate });
+    return rendered;
+  }
+
+  function injectSizeToken(text, sizeText) {
+    var value = String(text || "");
+    var currentSize = String(sizeText || "");
+    if (!value || !currentSize) return value;
+
+    var segments = value.split("__");
+    for (var i = 0; i < segments.length; i++) {
+      if (segments[i] === currentSize) {
+        segments[i] = RESULT_NAME_SIZE_TOKEN;
+        return segments.join("__");
+      }
+    }
+
+    var matchIndex = value.indexOf(currentSize);
+    if (matchIndex === -1) return value;
+
+    return value.slice(0, matchIndex) + RESULT_NAME_SIZE_TOKEN + value.slice(matchIndex + currentSize.length);
+  }
+
+  function buildEditableAutoResultTemplate(settings) {
+    return injectSizeToken(buildAutoResultName(settings), buildOutputSizeSegment(state.outputBoundsText));
+  }
+
+  function getEditableResultNameTemplate(settings) {
+    var currentTemplate = state.resultNameManualOverride
+      ? (state.resultNameTemplateText || state.resultSizeText || "")
+      : buildEditableAutoResultTemplate(settings);
+
+    if (currentTemplate.indexOf(RESULT_NAME_SIZE_TOKEN) !== -1) return currentTemplate;
+    return injectSizeToken(currentTemplate, buildOutputSizeSegment(state.outputBoundsText));
+  }
+
+  function refreshDisplayedResultName(settings, context) {
+    if (context) applyOutputContext(context);
+
+    if (!state.outputBoundsText) {
+      if (state.resultNameManualOverride) {
+        setResultSizeText(state.resultSizeText || "", {
+          manualOverride: true,
+          templateText: state.resultNameTemplateText || state.resultSizeText || ""
+        });
+        return state.resultSizeText || "";
+      }
+
+      setResultSizeText("", { manualOverride: false, templateText: "" });
+      return "";
+    }
+
+    if (state.resultNameManualOverride) {
+      return applyManualResultName(settings, state.resultNameTemplateText || state.resultSizeText || "");
+    }
+
+    return applyAutoResultName(settings);
   }
 
   function sanitizeEditableResultName(text) {
@@ -570,25 +687,50 @@
     return Boolean(resultNameField && resultNameField.classList.contains("is-editing"));
   }
 
+  function closeResultNameEditUi() {
+    if (!resultNameField) return;
+    resultNameField.readOnly = true;
+    resultNameField.classList.remove("is-editing");
+    resultNameField.removeAttribute("data-edit-start-rendered");
+    resultNameField.removeAttribute("data-edit-start-template");
+    resultNameField.removeAttribute("data-edit-start-manual");
+  }
+
+  function cancelResultNameEditMode() {
+    if (!resultNameField || !isEditingResultName()) return;
+
+    var startRendered = resultNameField.getAttribute("data-edit-start-rendered") || state.resultSizeText || "";
+    var startTemplate = resultNameField.getAttribute("data-edit-start-template") || "";
+    var startManual = resultNameField.getAttribute("data-edit-start-manual") === "true";
+
+    setResultSizeText(startRendered, {
+      manualOverride: startManual,
+      templateText: startManual ? (startTemplate || startRendered) : ""
+    });
+    closeResultNameEditUi();
+  }
+
   function exitResultNameEditMode() {
     if (!resultNameField || !isEditingResultName()) return;
 
-    var nextText = sanitizeEditableResultName(resultNameField.value);
-    var autoText = buildAutoResultName(getFormValues());
+    var settings = getFormValues();
+    var nextTemplate = sanitizeEditableResultName(resultNameField.value);
+    var autoTemplate = sanitizeEditableResultName(buildEditableAutoResultTemplate(settings));
 
-    if (!nextText) {
-      if (autoText) {
-        setResultSizeText(autoText, { manualOverride: false });
-      } else {
-        setResultSizeText("", { manualOverride: false });
-      }
+    if (!nextTemplate) {
+      refreshDisplayedResultName(settings);
+      state.resultNameManualOverride = false;
+      state.resultNameTemplateText = "";
+      if (state.outputBoundsText) applyAutoResultName(settings);
+      else setResultSizeText("", { manualOverride: false, templateText: "" });
+    } else if (nextTemplate === autoTemplate) {
+      applyAutoResultName(settings);
     } else {
-      setResultSizeText(nextText, { manualOverride: nextText !== autoText });
+      applyManualResultName(settings, nextTemplate);
     }
 
-    resultNameField.readOnly = true;
-    resultNameField.classList.remove("is-editing");
-    writeStoredSettings(buildStoredState(getFormValues()));
+    closeResultNameEditUi();
+    writeStoredSettings(buildStoredState(settings));
   }
 
   function enterResultNameEditMode() {
@@ -598,7 +740,14 @@
       resultNameClickTimer = null;
     }
 
-    resultNameField.setAttribute("data-edit-start", resultNameField.value || "");
+    var settings = getFormValues();
+    var editableTemplate = getEditableResultNameTemplate(settings);
+    var renderedStart = resultNameField.value || "";
+
+    resultNameField.setAttribute("data-edit-start-rendered", renderedStart);
+    resultNameField.setAttribute("data-edit-start-template", state.resultNameTemplateText || editableTemplate || renderedStart);
+    resultNameField.setAttribute("data-edit-start-manual", state.resultNameManualOverride ? "true" : "false");
+    resultNameField.value = editableTemplate || renderedStart;
     resultNameField.readOnly = false;
     resultNameField.classList.add("is-editing");
     resultNameField.focus();
@@ -615,8 +764,7 @@
   }
 
   function refreshOutputNameFromInputs() {
-    if (state.resultNameManualOverride) return;
-    applyAutoResultName(getFormValues());
+    refreshDisplayedResultName(getFormValues());
   }
 
   function copyTextToClipboard(text) {
@@ -742,15 +890,34 @@
         return;
       }
 
-      if (!state.resultNameManualOverride) applyAutoResultName(settings, parsed);
+      refreshDisplayedResultName(settings, parsed);
       writeStoredSettings(buildStoredState(settings));
       if (callback) callback(true, settings);
     });
   }
 
-  function runExport() {
+  function prepareResultNameForAction(callback) {
     exitResultNameEditMode();
-    var settings = getFormValues();
+    refreshResultNameFromHostForAction(function (ok, settings) {
+      if (!ok) {
+        if (callback) callback(false);
+        return;
+      }
+
+      var text = getResultNameText();
+      if (!text) {
+        if (callback) callback(false, settings, "");
+        return;
+      }
+
+      copyTextToClipboard(text);
+      flashResultSizeCopied();
+      if (callback) callback(true, settings, text);
+    });
+  }
+
+  function runExport(settings) {
+    settings = settings || getFormValues();
     var exportName = getResultNameText();
     if (!exportName) {
       window.alert("No output name available to export.");
@@ -831,7 +998,7 @@
       state.lastSourceFolderPaths = sanitizeFolderPaths(parsed.sourceFolderPaths);
 
       applyOutputContext(parsed);
-      applyAutoResultName(settings);
+      refreshDisplayedResultName(settings);
       writeStoredSettings(buildStoredState(settings));
     });
   }
@@ -849,12 +1016,18 @@
     state.sourceFolderLabel = stored.sourceFolderLabel ? String(stored.sourceFolderLabel) : "";
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
     state.resultNameManualOverride = Boolean(stored.resultNameManualOverride);
+    state.resultNameTemplateText = stored.resultNameTemplateText ? String(stored.resultNameTemplateText) : "";
 
     setFormValues(startSettings);
     updateExtraExportFolderButton();
     renderInventory(state.lastSourceItems);
-    if (state.outputBoundsText && !state.resultNameManualOverride) refreshOutputNameFromInputs();
-    else setResultSizeText(state.resultSizeText, { manualOverride: state.resultNameManualOverride });
+    if (state.outputBoundsText) refreshDisplayedResultName(startSettings);
+    else {
+      setResultSizeText(state.resultSizeText, {
+        manualOverride: state.resultNameManualOverride,
+        templateText: state.resultNameTemplateText || (state.resultNameManualOverride ? state.resultSizeText : "")
+      });
+    }
 
     inventoryListEl.addEventListener("input", function (evt) {
       var target = evt.target;
@@ -918,13 +1091,7 @@
         if (resultNameClickTimer) window.clearTimeout(resultNameClickTimer);
         resultNameClickTimer = window.setTimeout(function () {
           resultNameClickTimer = null;
-          refreshResultNameFromHostForAction(function (ok) {
-            if (!ok) return;
-            var text = getResultNameText();
-            if (!text) return;
-            copyTextToClipboard(text);
-            flashResultSizeCopied();
-          });
+          prepareResultNameForAction(function (_ok) {});
         }, 260);
       });
 
@@ -951,8 +1118,7 @@
 
         if (evt.key === "Escape") {
           evt.preventDefault();
-          resultNameField.value = resultNameField.getAttribute("data-edit-start") || state.resultSizeText || "";
-          resultNameField.blur();
+          cancelResultNameEditMode();
         }
       });
     }
@@ -966,12 +1132,24 @@
 
     if (exportBtn) {
       exportBtn.addEventListener("click", function () {
-        runExport();
+        prepareResultNameForAction(function (ok, settings) {
+          if (!ok) return;
+          runExport(settings);
+        });
       });
     }
     if (exportFolderBtn) {
       exportFolderBtn.addEventListener("click", function () {
         chooseExtraExportFolder();
+      });
+    }
+    if (regenerateNameBtn) {
+      regenerateNameBtn.addEventListener("click", function () {
+        exitResultNameEditMode();
+        state.resultNameManualOverride = false;
+        state.resultNameTemplateText = "";
+        refreshDisplayedResultName(getFormValues());
+        writeStoredSettings(buildStoredState(getFormValues()));
       });
     }
 
@@ -981,9 +1159,10 @@
       state.quantityOverrides = {};
       renderInventory(state.lastSourceItems);
       state.resultNameManualOverride = false;
+      state.resultNameTemplateText = "";
       updateExtraExportFolderButton();
-      if (state.outputBoundsText) refreshOutputNameFromInputs();
-      else setResultSizeText("", { manualOverride: false });
+      if (state.outputBoundsText) refreshDisplayedResultName(combinedDefaults);
+      else setResultSizeText("", { manualOverride: false, templateText: "" });
       writeStoredSettings(buildStoredState(combinedDefaults));
     });
   }
@@ -997,8 +1176,5 @@
     initWithDefaults(parsed);
   });
 })();
-
-
-
 
 

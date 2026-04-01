@@ -37,7 +37,7 @@ var DEFAULTS = {
     maxLengthIn: 100,
     spacingIn: 0.25,
     optimizePreset: "Auto",
-    searchEffort: "Normal",
+    searchEffort: "High",
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
     hideSourceLayersAfterBuild: true

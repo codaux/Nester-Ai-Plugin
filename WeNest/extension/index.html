@@ -77,7 +77,7 @@
 
       <section class="section naming-section">
         <div class="result-name-fields">
-          <div class="grid grid-3-tight">
+          <div class="grid grid-3-tight grid-4-tight">
             <label class="field">
               <div class="number-field">
                 <span class="input-knit">Date</span>
@@ -108,6 +108,16 @@
                 </div>
               </div>
             </label>
+            <label class="field">
+              <div class="number-field">
+                <span class="input-knit">Part</span>
+                <input id="outputPartCount" class="number-field-input" type="number" min="0" max="9" step="1" inputmode="numeric" />
+                <div class="number-stepper">
+                  <button class="number-stepper-btn" type="button" data-step-target="outputPartCount" data-step-dir="1" aria-label="Increase part"></button>
+                  <button class="number-stepper-btn" type="button" data-step-target="outputPartCount" data-step-dir="-1" aria-label="Decrease part"></button>
+                </div>
+              </div>
+            </label>
           </div>
 
           <div class="tag-list" aria-label="Output tags">
@@ -117,9 +127,14 @@
             <label class="tag-pill"><input id="tagCUT" type="checkbox" /><span>CUT</span></label>
             <label class="tag-pill"><input id="tagPurolator" type="checkbox" /><span>Purolator</span></label>
             <label class="tag-pill"><input id="tagGLS" type="checkbox" /><span>GLS</span></label>
+            <label class="tag-pill"><input id="tagINTERNAL" type="checkbox" /><span>INTERNAL</span></label>
+            <label class="tag-pill"><input id="tagREPRINT" type="checkbox" /><span>REPRINT</span></label>
           </div>
 
-          <textarea id="result-name-field" class="result-size-button result-name-input" rows="2" readonly spellcheck="false">UVM__--</textarea>
+          <div class="result-name-wrap">
+            <textarea id="result-name-field" class="result-size-button result-name-input" rows="2" readonly spellcheck="false">UVM__--</textarea>
+            <button id="btn-regenerate-name" class="result-name-reset" type="button" aria-label="Regenerate output name" title="Clear custom name and rebuild from current settings">&#8635;</button>
+          </div>
         </div>
       </section>
 
