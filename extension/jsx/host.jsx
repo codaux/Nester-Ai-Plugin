@@ -214,6 +214,111 @@ function parseQtyFromName(name) {
     return 1;
 }
 
+function normalizeOrderSourceName(pathOrName) {
+    var s = normalizeAsciiDigits(trimStr(getFileNameOnly(pathOrName || "")));
+    s = stripExt(s).toLowerCase();
+    s = s.replace(/^\d+_+/, "");
+    return trimStr(s);
+}
+
+function parseOrderNumber(value) {
+    var s = normalizeAsciiDigits(trimStr(value || ""));
+    var m = s.match(/-?\d+(?:\.\d+)?/);
+    if (!m || !m[0]) return NaN;
+    return parseFloat(m[0]);
+}
+
+function parseOrderLineItemQty(value) {
+    var s = normalizeAsciiDigits(trimStr(value || ""));
+    var m = s.match(/^(\d+(?:\.\d+)?)\s+\$/);
+    if (!m || !m[1]) return NaN;
+    return parseFloat(m[1]);
+}
+
+function parseOrderEmailLookup(rawText) {
+    var lookup = {};
+    var text = normalizeAsciiDigits(String(rawText || "")).replace(/\r\n?/g, "\n");
+    var rawLines;
+    var lines = [];
+
+    if (!trimStr(text)) return lookup;
+
+    rawLines = text.split("\n");
+    for (var lineIndex = 0; lineIndex < rawLines.length; lineIndex++) {
+        var line = trimStr(rawLines[lineIndex]);
+        if (line) lines.push(line);
+    }
+
+    for (var i = 0; i < lines.length - 5; i++) {
+        if (lines[i + 1] !== "Width:") continue;
+
+        var widthIn = parseOrderNumber(lines[i + 2]);
+        if (isNaN(widthIn)) continue;
+        if (lines[i + 3] !== "Height:") continue;
+
+        var heightIn = parseOrderNumber(lines[i + 4]);
+        if (isNaN(heightIn)) continue;
+
+        var cursor = i + 5;
+        var explicitQty = NaN;
+        if (lines[cursor] === "Quantity:") {
+            explicitQty = parseOrderNumber(lines[cursor + 1]);
+            cursor += 2;
+        }
+
+        if (lines[cursor] !== "Image file upload:" || cursor + 1 >= lines.length) continue;
+
+        var fileName = lines[cursor + 1];
+        var lineItemQty = NaN;
+        var scan = cursor + 2;
+
+        for (; scan < lines.length; scan++) {
+            if (scan + 1 < lines.length && lines[scan + 1] === "Width:") break;
+            lineItemQty = parseOrderLineItemQty(lines[scan]);
+            if (!isNaN(lineItemQty)) break;
+        }
+
+        var qty = !isNaN(explicitQty) ? explicitQty : lineItemQty;
+        qty = isNaN(qty) ? 1 : Math.max(1, Math.round(qty));
+
+        var key = normalizeOrderSourceName(fileName);
+        if (key) {
+            if (lookup[key]) {
+                lookup[key].qty += qty;
+            } else {
+                lookup[key] = {
+                    key: key,
+                    fileName: fileName,
+                    qty: qty,
+                    widthIn: widthIn,
+                    heightIn: heightIn
+                };
+            }
+        }
+
+        i = scan - 1;
+    }
+
+    return lookup;
+}
+
+function exceedsRelativeTolerance(actualValue, expectedValue, tolerance) {
+    if (!(expectedValue > 0)) return false;
+    return Math.abs(actualValue - expectedValue) / expectedValue > tolerance;
+}
+
+function hasOrderDimensionMismatch(actualWidthPt, actualHeightPt, orderWidthIn, orderHeightIn) {
+    if (!(orderWidthIn > 0) || !(orderHeightIn > 0)) return false;
+
+    var actualLong = Math.max(actualWidthPt, actualHeightPt) / PT_PER_IN;
+    var actualShort = Math.min(actualWidthPt, actualHeightPt) / PT_PER_IN;
+    var orderLong = Math.max(orderWidthIn, orderHeightIn);
+    var orderShort = Math.min(orderWidthIn, orderHeightIn);
+
+    return exceedsRelativeTolerance(actualLong, orderLong, 0.05) ||
+        exceedsRelativeTolerance(actualShort, orderShort, 0.05);
+}
+
 function getItemFileName(item) {
     try {
         if (item.file) return getFileNameOnly(item.file.fsName || item.file.name);
@@ -585,7 +690,7 @@ function hideSourceLayers(doc) {
 // Source normalization
 // =====================================================
 
-function collectPlacedItems(doc, quantityOverrides) {
+function collectPlacedItems(doc, quantityOverrides, orderLookup) {
     var result = [];
     var ordinal = 0;
 
@@ -600,7 +705,8 @@ function collectPlacedItems(doc, quantityOverrides) {
         var filePath = getItemFilePath(it);
         var sz = getVisibleSize(it);
         var key = buildSourceKey(name, sz.width, sz.height, ordinal);
-        var baseQty = parseQtyFromName(name);
+        var orderInfo = orderLookup ? orderLookup[normalizeOrderSourceName(filePath || name)] : null;
+        var baseQty = orderInfo ? orderInfo.qty : parseQtyFromName(name);
         var overrideQty = quantityOverrides && quantityOverrides.hasOwnProperty(key) ? quantityOverrides[key] : null;
         var qty = (overrideQty === null || overrideQty === undefined) ? baseQty : Math.max(1, overrideQty);
 
@@ -615,6 +721,9 @@ function collectPlacedItems(doc, quantityOverrides) {
             qty: qty,
             width: sz.width,
             height: sz.height,
+            orderWidthIn: orderInfo ? orderInfo.widthIn : 0,
+            orderHeightIn: orderInfo ? orderInfo.heightIn : 0,
+            dimensionMismatch: orderInfo ? hasOrderDimensionMismatch(sz.width, sz.height, orderInfo.widthIn, orderInfo.heightIn) : false,
             area: areaOf(sz.width, sz.height),
             longSide: longSide(sz.width, sz.height),
             shortSide: shortSide(sz.width, sz.height)
@@ -627,7 +736,8 @@ function collectPlacedItems(doc, quantityOverrides) {
 }
 
 function collectAndNormalizeSources(doc, settings) {
-    var sources = collectPlacedItems(doc, settings.quantityOverrides);
+    var orderLookup = parseOrderEmailLookup(settings.orderEmailText);
+    var sources = collectPlacedItems(doc, settings.quantityOverrides, orderLookup);
     if (!sources || sources.length === 0) throw new Error("No placed items found in the current document.");
     return sources;
 }
@@ -2823,6 +2933,13 @@ function buildSourceQuantitySummary(result) {
 
     for (i = 0; i < result.sources.length; i++) {
         var src = result.sources[i];
+        var dimensionsText = inToStr(src.width) + " x " + inToStr(src.height);
+        var orderDimensionsText = (src.orderWidthIn > 0 && src.orderHeightIn > 0)
+            ? (src.orderWidthIn.toFixed(2) + " x " + src.orderHeightIn.toFixed(2))
+            : "";
+        var dimensionsTitle = src.dimensionMismatch && orderDimensionsText
+            ? ("File: " + dimensionsText + " | Order: " + orderDimensionsText)
+            : dimensionsText;
         byKey[src.key] = {
             id: src.id,
             key: src.key,
@@ -2834,7 +2951,9 @@ function buildSourceQuantitySummary(result) {
             unplacedQty: 0,
             widthIn: parseFloat(inToStr(src.width)),
             heightIn: parseFloat(inToStr(src.height)),
-            dimensionsText: inToStr(src.width) + " x " + inToStr(src.height)
+            dimensionsText: dimensionsText,
+            dimensionsTitle: dimensionsTitle,
+            dimensionMismatch: Boolean(src.dimensionMismatch)
         };
         out.push(byKey[src.key]);
     }
@@ -3208,6 +3327,7 @@ function normalizeSettingsFromPanel(input) {
     s.allowBlockRotationOnSheet = _boolOr(input.allowBlockRotationOnSheet, s.allowBlockRotationOnSheet);
     s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
     s.quantityOverrides = normalizeQuantityOverrides(input.quantityOverrides);
+    s.orderEmailText = String(input.orderEmailText || "");
     return s;
 }
 

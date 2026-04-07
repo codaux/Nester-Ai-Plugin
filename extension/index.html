@@ -71,6 +71,18 @@
         <div class="section-head">
           <span id="inventory-meta" class="inventory-meta">Run NEST once to load items</span>
         </div>
+        <div class="inventory-order-tools">
+          <button id="btn-order-email" class="inventory-order-btn secondary" type="button">Paste Order</button>
+        </div>
+        <div id="order-email-wrap" class="order-email-wrap" hidden>
+          <textarea
+            id="order-email-text"
+            class="order-email-text"
+            rows="4"
+            spellcheck="false"
+            placeholder="Paste the order email text here"
+          ></textarea>
+        </div>
         <p id="inventory-empty" class="inventory-empty">After the first nest, each file will appear here with an editable quantity.</p>
         <div id="inventory-list" class="inventory-table" hidden></div>
       </section>

@@ -455,6 +455,50 @@ button:disabled {
   }
 }
 
+.inventory-order-tools {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 6px;
+}
+
+.inventory-order-btn {
+  min-width: 0;
+  padding: 4px 10px;
+  border-radius: 10px;
+  font-size: 10px;
+}
+
+.inventory-order-btn.is-active {
+  background: linear-gradient(180deg, #304156 0%, #223142 100%);
+}
+
+.order-email-wrap[hidden] {
+  display: none !important;
+}
+
+.order-email-wrap {
+  margin-bottom: 8px;
+}
+
+.order-email-text {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: 1px solid #4b5567;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #1a2230 0%, #131a25 100%);
+  color: #edf3fb;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.order-email-text:focus {
+  outline: none;
+  border-color: #6b819c;
+}
+
 .inventory-empty {
   margin: 0;
   color: #aab8c8;
@@ -577,6 +621,10 @@ button:disabled {
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.inventory-dimensions.is-mismatch {
+  color: #ff7b7b;
 }
 
 .inventory-input-wrap {

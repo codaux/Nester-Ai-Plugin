@@ -14,6 +14,9 @@
   var inventoryListEl = document.getElementById("inventory-list");
   var inventoryEmptyEl = document.getElementById("inventory-empty");
   var inventoryMetaEl = document.getElementById("inventory-meta");
+  var orderEmailBtn = document.getElementById("btn-order-email");
+  var orderEmailWrapEl = document.getElementById("order-email-wrap");
+  var orderEmailTextEl = document.getElementById("order-email-text");
   var resultNameField = document.getElementById("result-name-field");
   var panelFeedbackEl = document.getElementById("panel-feedback");
 
@@ -77,7 +80,8 @@
     outputBoundsText: "",
     sourceFolderLabel: "",
     resultNameManualOverride: false,
-    resultNameTemplateText: ""
+    resultNameTemplateText: "",
+    orderEmailText: ""
   };
   var resultNameFeedbackTimer = null;
   var resultNameClickTimer = null;
@@ -87,6 +91,7 @@
   var autoNestQueued = false;
   var busyMode = null;
   var AUTO_NEST_DELAY_MS = 500;
+  var suspendInventoryInputSync = false;
 
   function byId(id) {
     return document.getElementById(id);
@@ -117,6 +122,10 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function normalizeMultilineText(value) {
+    return String(value || "").replace(/\r\n?/g, "\n");
   }
 
   function toFileUrl(filePath) {
@@ -240,7 +249,9 @@
         requestedQty: sanitizeQty(item.requestedQty, 1),
         placedQty: Math.max(0, Number(item.placedQty) || 0),
         unplacedQty: Math.max(0, Number(item.unplacedQty) || 0),
-        dimensionsText: item.dimensionsText ? String(item.dimensionsText) : ""
+        dimensionsText: item.dimensionsText ? String(item.dimensionsText) : "",
+        dimensionsTitle: item.dimensionsTitle ? String(item.dimensionsTitle) : "",
+        dimensionMismatch: Boolean(item.dimensionMismatch)
       });
     }
 
@@ -288,7 +299,8 @@
       outputBoundsText: state.outputBoundsText,
       sourceFolderLabel: state.sourceFolderLabel,
       resultNameManualOverride: state.resultNameManualOverride,
-      resultNameTemplateText: state.resultNameTemplateText
+      resultNameTemplateText: state.resultNameTemplateText,
+      orderEmailText: state.orderEmailText
     });
     return out;
   }
@@ -349,8 +361,9 @@
       else settings[id] = el.value;
     }
 
-    syncOverridesFromInputs();
+    if (!suspendInventoryInputSync) syncOverridesFromInputs();
     settings.quantityOverrides = sanitizeQuantityOverrides(state.quantityOverrides);
+    settings.orderEmailText = state.orderEmailText;
     return settings;
   }
 
@@ -492,6 +505,11 @@
     autoNestTimer = null;
   }
 
+  function setOrderEmailVisibility(isVisible) {
+    if (orderEmailWrapEl) orderEmailWrapEl.hidden = !isVisible;
+    if (orderEmailBtn) orderEmailBtn.classList.toggle("is-active", Boolean(isVisible));
+  }
+
   function flushAutoNest() {
     var settings;
     autoNestTimer = null;
@@ -519,6 +537,7 @@
       next[items[i].key] = sanitizeQty(items[i].requestedQty, items[i].detectedQty);
     }
     state.quantityOverrides = next;
+    suspendInventoryInputSync = false;
   }
 
   function getInventoryMetaSummary(items) {
@@ -883,6 +902,10 @@
       var placedLabel = item.unplacedQty > 0
         ? (item.placedQty + "/" + item.requestedQty)
         : String(item.placedQty);
+      var dimensionsClass = item.dimensionMismatch
+        ? "inventory-dimensions is-mismatch"
+        : "inventory-dimensions";
+      var dimensionsTitle = item.dimensionsTitle || item.dimensionsText;
 
       html.push(
         '<div class="inventory-card" data-source-key="' + escapeHtml(item.key) + '">' +
@@ -907,7 +930,7 @@
               '</div>' +
               '<span class="inventory-arrow">&#x1F87A;</span>' +
               '<span class="inventory-placed">' + escapeHtml(placedLabel) + '</span>' +
-              '<span class="inventory-dimensions">' + escapeHtml(item.dimensionsText) + '</span>' +
+              '<span class="' + dimensionsClass + '" title="' + escapeHtml(dimensionsTitle) + '">' + escapeHtml(item.dimensionsText) + '</span>' +
             '</div>' +
           '</div>' +
         '</div>'
@@ -1063,10 +1086,13 @@
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
     state.resultNameManualOverride = Boolean(stored.resultNameManualOverride);
     state.resultNameTemplateText = stored.resultNameTemplateText ? String(stored.resultNameTemplateText) : "";
+    state.orderEmailText = normalizeMultilineText(stored.orderEmailText);
 
     setFormValues(startSettings);
     updateExtraExportFolderButton();
     renderInventory(state.lastSourceItems);
+    if (orderEmailTextEl) orderEmailTextEl.value = state.orderEmailText;
+    setOrderEmailVisibility(Boolean(state.orderEmailText));
     if (state.outputBoundsText) refreshDisplayedResultName(startSettings);
     else {
       setResultSizeText(state.resultSizeText, {
@@ -1078,6 +1104,7 @@
     inventoryListEl.addEventListener("input", function (evt) {
       var target = evt.target;
       if (!target || !target.getAttribute("data-source-key")) return;
+      suspendInventoryInputSync = false;
       state.quantityOverrides[target.getAttribute("data-source-key")] = sanitizeQty(target.value, 1);
       writeStoredSettings(buildStoredState(getFormValues()));
       scheduleAutoNest();
@@ -1131,6 +1158,23 @@
     });
     formEl.addEventListener("input", handleNamingFieldUpdate);
     formEl.addEventListener("change", handleNamingFieldUpdate);
+
+    if (orderEmailBtn) {
+      orderEmailBtn.addEventListener("click", function () {
+        setOrderEmailVisibility(true);
+        if (orderEmailTextEl) orderEmailTextEl.focus();
+      });
+    }
+
+    if (orderEmailTextEl) {
+      orderEmailTextEl.addEventListener("input", function () {
+        state.orderEmailText = normalizeMultilineText(orderEmailTextEl.value);
+        suspendInventoryInputSync = true;
+        state.quantityOverrides = {};
+        writeStoredSettings(buildStoredState(getFormValues()));
+        scheduleAutoNest();
+      });
+    }
 
     if (resultNameField) {
       resultNameField.addEventListener("click", function () {
