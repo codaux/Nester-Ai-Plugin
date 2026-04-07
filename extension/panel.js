@@ -83,6 +83,10 @@
   var resultNameClickTimer = null;
   var panelFeedbackTimer = null;
   var panelFeedbackHideTimer = null;
+  var autoNestTimer = null;
+  var autoNestQueued = false;
+  var busyMode = null;
+  var AUTO_NEST_DELAY_MS = 500;
 
   function byId(id) {
     return document.getElementById(id);
@@ -170,10 +174,17 @@
   function stepNamingNumberField(input, direction) {
     if (!input || !input.id) return;
     var limits = STEPPER_FIELD_LIMITS[input.id];
+    var nextValue;
     if (!limits) return;
 
     var currentValue = sanitizeCountInRange(input.value, limits.min, limits.max, DEFAULTS[input.id]);
-    var nextValue = sanitizeCountInRange(currentValue + direction, limits.min, limits.max, currentValue);
+    if (input.id === "outputDate") {
+      nextValue = currentValue + direction;
+      if (nextValue > limits.max) nextValue = limits.min;
+      else if (nextValue < limits.min) nextValue = limits.max;
+    } else {
+      nextValue = sanitizeCountInRange(currentValue + direction, limits.min, limits.max, currentValue);
+    }
     if (String(input.value) === String(nextValue)) return;
 
     input.value = String(nextValue);
@@ -456,6 +467,7 @@
   }
 
   function setBusy(mode) {
+    busyMode = mode || null;
     var isNestBusy = mode === "nest";
     var isExportBusy = mode === "export";
     var isBusy = isNestBusy || isExportBusy;
@@ -471,6 +483,34 @@
     if (regenerateNameBtn) regenerateNameBtn.disabled = isBusy || !state.outputBoundsText;
 
     resetBtn.disabled = isBusy;
+  }
+
+  function cancelAutoNest() {
+    autoNestQueued = false;
+    if (!autoNestTimer) return;
+    window.clearTimeout(autoNestTimer);
+    autoNestTimer = null;
+  }
+
+  function flushAutoNest() {
+    var settings;
+    autoNestTimer = null;
+    if (!autoNestQueued) return;
+    if (busyMode) {
+      autoNestTimer = window.setTimeout(flushAutoNest, AUTO_NEST_DELAY_MS);
+      return;
+    }
+
+    autoNestQueued = false;
+    settings = getFormValues();
+    writeStoredSettings(buildStoredState(settings));
+    runNester(settings);
+  }
+
+  function scheduleAutoNest() {
+    autoNestQueued = true;
+    if (autoNestTimer) window.clearTimeout(autoNestTimer);
+    autoNestTimer = window.setTimeout(flushAutoNest, AUTO_NEST_DELAY_MS);
   }
 
   function syncQuantityOverridesFromResult(items) {
@@ -1040,6 +1080,7 @@
       if (!target || !target.getAttribute("data-source-key")) return;
       state.quantityOverrides[target.getAttribute("data-source-key")] = sanitizeQty(target.value, 1);
       writeStoredSettings(buildStoredState(getFormValues()));
+      scheduleAutoNest();
     });
     inventoryListEl.addEventListener("mousedown", function (evt) {
       if (findInventoryStepButton(evt.target)) evt.preventDefault();
@@ -1131,6 +1172,7 @@
 
     formEl.addEventListener("submit", function (evt) {
       evt.preventDefault();
+      cancelAutoNest();
       var settings = getFormValues();
       writeStoredSettings(buildStoredState(settings));
       runNester(settings);
@@ -1160,6 +1202,7 @@
     }
 
     resetBtn.addEventListener("click", function () {
+      cancelAutoNest();
       exitResultNameEditMode();
       setFormValues(combinedDefaults);
       state.quantityOverrides = {};
