@@ -427,11 +427,32 @@ button:disabled {
 }
 
 .inventory-meta {
+  display: block;
+  width: 100%;
   font-size: 10px;
   color: #91a7c0;
-  text-align: right;
-  align-items: center;
   text-align: center;
+  letter-spacing: 0.03em;
+}
+
+.inventory-meta-warning {
+  color: #ff6b6b;
+  text-shadow: 0 0 8px rgba(255, 82, 82, 0.35);
+  animation: inventory-meta-alert 0.95s steps(2, end) infinite;
+}
+
+@keyframes inventory-meta-alert {
+  0%,
+  45% {
+    opacity: 1;
+    filter: saturate(1);
+  }
+
+  46%,
+  100% {
+    opacity: 0.28;
+    filter: saturate(1.4);
+  }
 }
 
 .inventory-empty {

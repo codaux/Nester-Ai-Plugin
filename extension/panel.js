@@ -481,7 +481,7 @@
     state.quantityOverrides = next;
   }
 
-  function buildInventoryMeta(items) {
+  function getInventoryMetaSummary(items) {
     var fileCount = items.length;
     var placed = 0;
     var requested = 0;
@@ -491,7 +491,10 @@
       requested += items[i].requestedQty;
     }
 
-    return fileCount + " files | " + placed + "/" + requested + " placed";
+    return {
+      text: fileCount + " files | " + placed + "/" + requested + " placed",
+      isIncomplete: requested > 0 && placed < requested
+    };
   }
 
   function getResultNameText() {
@@ -826,6 +829,7 @@
       inventoryListEl.innerHTML = "";
       inventoryEmptyEl.hidden = false;
       inventoryMetaEl.textContent = "Run NEST once to load items";
+      inventoryMetaEl.classList.remove("inventory-meta-warning");
       return;
     }
 
@@ -873,7 +877,9 @@
     inventoryListEl.innerHTML = html.join("");
     inventoryListEl.hidden = false;
     inventoryEmptyEl.hidden = true;
-    inventoryMetaEl.textContent = buildInventoryMeta(state.lastSourceItems);
+    var metaSummary = getInventoryMetaSummary(state.lastSourceItems);
+    inventoryMetaEl.textContent = metaSummary.text;
+    inventoryMetaEl.classList.toggle("inventory-meta-warning", metaSummary.isIncomplete);
   }
 
   function refreshResultNameFromHostForAction(callback) {
