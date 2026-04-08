@@ -71,18 +71,6 @@
         <div class="section-head">
           <span id="inventory-meta" class="inventory-meta">Run NEST once to load items</span>
         </div>
-        <div class="inventory-order-tools">
-          <button id="btn-order-email" class="inventory-order-btn secondary" type="button">Paste Order</button>
-        </div>
-        <div id="order-email-wrap" class="order-email-wrap" hidden>
-          <textarea
-            id="order-email-text"
-            class="order-email-text"
-            rows="4"
-            spellcheck="false"
-            placeholder="Paste the order email text here"
-          ></textarea>
-        </div>
         <p id="inventory-empty" class="inventory-empty">After the first nest, each file will appear here with an editable quantity.</p>
         <div id="inventory-list" class="inventory-table" hidden></div>
       </section>
@@ -152,7 +140,12 @@
 
       <div class="actions-sticky">
         <div class="actions actions-main">
-          <button id="btn-run" type="submit">NEST</button>
+          <div class="nest-action">
+            <button id="btn-run" type="submit">NEST</button>
+            <button id="btn-order-email" type="button" class="icon-button" aria-label="Paste order" title="Paste order">
+              <span class="icon-button-text">+</span>
+            </button>
+          </div>
           <div class="export-action">
             <button id="btn-export" type="button">EXPORT</button>
             <button id="btn-export-folder" type="button" class="icon-button" aria-label="Choose extra export folder" title="Choose extra export folder">
@@ -164,9 +157,28 @@
         <div id="panel-feedback" class="panel-feedback" hidden aria-live="polite"></div>
       </div>
     </form>
+    <div id="order-email-wrap" class="order-email-modal" hidden>
+      <div id="order-email-backdrop" class="order-email-backdrop"></div>
+      <div class="order-email-card" role="dialog" aria-modal="true" aria-label="Paste order">
+        <div class="order-email-head">
+          <strong>Paste Order</strong>
+          <button id="btn-order-email-close" class="order-email-close" type="button" aria-label="Close paste order">&times;</button>
+        </div>
+        <textarea
+          id="order-email-text"
+          class="order-email-text"
+          rows="7"
+          spellcheck="false"
+          placeholder="Paste the order email text here"
+        ></textarea>
+        <div class="order-email-actions">
+          <button id="btn-size-match" class="inventory-tool-btn secondary" type="button" title="Match order size">Match Size</button>
+        </div>
+      </div>
+    </div>
     <div class="actions footer-actions">
       <h3>Made by REZA @ WeMust</h3>
-      <h3>version 0.3.0</h3>
+      <h3>version 0.3.1</h3>
     </div>
   </main>
 

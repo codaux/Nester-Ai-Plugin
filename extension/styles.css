@@ -149,11 +149,11 @@ h2 {
 }
 
 .input-icon {
-  width: 24px;
-  height: 24px;
-  padding: 2px;
+  width: 20px;
+  height: 20px;
+  /* padding: 2px; */
   flex: 0 0 28px;
-  margin: 3px 4px 3px 6px;
+  margin: 3px 4px 3px 5px;
   object-fit: contain;
   opacity: 0.8;
 }
@@ -261,6 +261,7 @@ select {
 }
 
 .actions > button,
+.nest-action button,
 .export-action button {
   margin: 0;
 }
@@ -269,6 +270,7 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.nest-action,
 .export-action {
   min-width: 0;
   display: grid;
@@ -277,6 +279,17 @@ select {
   align-items: stretch;
   overflow: hidden;
   border-radius: 14px;
+}
+
+.nest-action {
+  background-image: linear-gradient(
+    30deg,
+    #17e17c -7%,
+    hsl(252, 100%, 80%) 60%
+  );
+}
+
+.export-action {
   background-image: linear-gradient(30deg, #e1b517 -7%, hsl(112, 56%, 39%) 60%);
   /* box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); */
 }
@@ -359,12 +372,14 @@ button {
   cursor: pointer;
 }
 
+#btn-run,
 #btn-export {
-  background-image: linear-gradient(30deg, #e1b517 -7%, hsl(112, 56%, 39%) 60%);
   padding-left: 15px;
   overflow: hidden;
 }
 
+.nest-action > #btn-run,
+.nest-action > .icon-button,
 .export-action > #btn-export,
 .export-action > .icon-button {
   min-width: 0;
@@ -374,15 +389,18 @@ button {
   box-shadow: none;
 }
 
+.nest-action > #btn-run,
 .export-action > #btn-export {
   border-top-left-radius: 14px;
   border-bottom-left-radius: 14px;
 }
 
+.nest-action > #btn-run:hover,
 .export-action > #btn-export:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.nest-action > #btn-run:active,
 .export-action > #btn-export:active {
   background: rgba(0, 0, 0, 0.05);
 }
@@ -415,6 +433,14 @@ button {
   display: block;
   mix-blend-mode: overlay;
   opacity: 0.5;
+}
+
+.icon-button-text {
+  display: block;
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.82);
+  padding-bottom: 1px;
 }
 
 button.secondary {
@@ -455,34 +481,84 @@ button:disabled {
   }
 }
 
-.inventory-order-tools {
-  display: flex;
-  justify-content: flex-start;
-  margin-bottom: 6px;
-}
-
-.inventory-order-btn {
+.inventory-tool-btn {
   min-width: 0;
   padding: 4px 10px;
   border-radius: 10px;
   font-size: 10px;
 }
 
-.inventory-order-btn.is-active {
+.inventory-tool-btn.is-active {
   background: linear-gradient(180deg, #304156 0%, #223142 100%);
 }
 
-.order-email-wrap[hidden] {
+.order-email-modal[hidden] {
   display: none !important;
 }
 
-.order-email-wrap {
+.order-email-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+}
+
+.order-email-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 18, 0.68);
+}
+
+.order-email-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  border: 1px solid #40506a;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #1a2230 0%, #131a25 100%);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38);
+  padding: 10px;
+}
+
+.order-email-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
+  color: #e7eef9;
+  font-size: 11px;
+}
+
+.order-email-close {
+  min-width: 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e7eef9;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.order-email-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.order-email-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 8px;
 }
 
 .order-email-text {
   width: 100%;
-  min-height: 72px;
+  min-height: 132px;
   resize: vertical;
   padding: 6px 8px;
   border: 1px solid #4b5567;
@@ -609,7 +685,7 @@ button:disabled {
   color: #9ca9bb;
   font-size: 11px;
   line-height: 1;
-  white-space: nowrap;
+  white-space: nowrap;hekn
 }
 
 .inventory-nameqty,
@@ -623,7 +699,11 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.inventory-dimensions.is-mismatch {
+.inventory-dimensions.is-warn {
+  color: #f2cd62;
+}
+
+.inventory-dimensions.is-error {
   color: #ff7b7b;
 }
 
@@ -750,11 +830,11 @@ input.inventory-input {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 8px;
   font-weight: 600;
   letter-spacing: 0.08em;
   color: #8ba1c9;
-  padding: 2px 6px;
+  padding: 1px 3px;
   border-right: 1px solid rgba(255, 255, 255, 0.12);
   white-space: nowrap;
 }

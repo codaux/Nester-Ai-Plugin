@@ -14,8 +14,11 @@
   var inventoryListEl = document.getElementById("inventory-list");
   var inventoryEmptyEl = document.getElementById("inventory-empty");
   var inventoryMetaEl = document.getElementById("inventory-meta");
+  var sizeMatchBtn = document.getElementById("btn-size-match");
   var orderEmailBtn = document.getElementById("btn-order-email");
   var orderEmailWrapEl = document.getElementById("order-email-wrap");
+  var orderEmailBackdropEl = document.getElementById("order-email-backdrop");
+  var orderEmailCloseBtn = document.getElementById("btn-order-email-close");
   var orderEmailTextEl = document.getElementById("order-email-text");
   var resultNameField = document.getElementById("result-name-field");
   var panelFeedbackEl = document.getElementById("panel-feedback");
@@ -81,7 +84,8 @@
     sourceFolderLabel: "",
     resultNameManualOverride: false,
     resultNameTemplateText: "",
-    orderEmailText: ""
+    orderEmailText: "",
+    sizeMatchEnabled: false
   };
   var resultNameFeedbackTimer = null;
   var resultNameClickTimer = null;
@@ -106,6 +110,14 @@
 
   function hasCepBridge() {
     return typeof window.__adobe_cep__ !== "undefined";
+  }
+
+  function isPreviewMode() {
+    return !hasCepBridge();
+  }
+
+  function notifyPreviewMode(message) {
+    setPanelFeedback(message || "Preview mode only. CEP bridge is unavailable here.", "warning", 2800);
   }
   function escapeForJsxString(s) {
     return String(s)
@@ -251,7 +263,7 @@
         unplacedQty: Math.max(0, Number(item.unplacedQty) || 0),
         dimensionsText: item.dimensionsText ? String(item.dimensionsText) : "",
         dimensionsTitle: item.dimensionsTitle ? String(item.dimensionsTitle) : "",
-        dimensionMismatch: Boolean(item.dimensionMismatch)
+        dimensionStatus: item.dimensionStatus ? String(item.dimensionStatus) : "none"
       });
     }
 
@@ -299,20 +311,19 @@
       outputBoundsText: state.outputBoundsText,
       sourceFolderLabel: state.sourceFolderLabel,
       resultNameManualOverride: state.resultNameManualOverride,
-      resultNameTemplateText: state.resultNameTemplateText,
-      orderEmailText: state.orderEmailText
+      resultNameTemplateText: state.resultNameTemplateText
     });
+    delete out.orderEmailText;
+    delete out.sizeMatchEnabled;
     return out;
   }
 
   function evalHost(script, callback) {
-    if (!hasCepBridge()) {
-      window.alert("CEP bridge not found.");
-      return;
-    }
+    if (!hasCepBridge()) return false;
     window.__adobe_cep__.evalScript(script, function (result) {
       if (callback) callback(result);
     });
+    return true;
   }
 
   function alertUnexpectedHostResponse(rawResult) {
@@ -364,6 +375,7 @@
     if (!suspendInventoryInputSync) syncOverridesFromInputs();
     settings.quantityOverrides = sanitizeQuantityOverrides(state.quantityOverrides);
     settings.orderEmailText = state.orderEmailText;
+    settings.sizeMatchEnabled = state.sizeMatchEnabled;
     return settings;
   }
 
@@ -493,6 +505,8 @@
       exportBtn.textContent = isExportBusy ? "Exporting..." : "EXPORT";
     }
     if (exportFolderBtn) exportFolderBtn.disabled = isBusy;
+    if (sizeMatchBtn) sizeMatchBtn.disabled = isBusy;
+    if (orderEmailBtn) orderEmailBtn.disabled = isBusy;
     if (regenerateNameBtn) regenerateNameBtn.disabled = isBusy || !state.outputBoundsText;
 
     resetBtn.disabled = isBusy;
@@ -507,7 +521,20 @@
 
   function setOrderEmailVisibility(isVisible) {
     if (orderEmailWrapEl) orderEmailWrapEl.hidden = !isVisible;
-    if (orderEmailBtn) orderEmailBtn.classList.toggle("is-active", Boolean(isVisible));
+    if (orderEmailBtn) orderEmailBtn.classList.toggle("is-selected", Boolean(state.orderEmailText));
+  }
+
+  function clearPendingOrderState() {
+    state.orderEmailText = "";
+    state.sizeMatchEnabled = false;
+    if (orderEmailTextEl) orderEmailTextEl.value = "";
+    updateSizeMatchButton();
+    setOrderEmailVisibility(false);
+  }
+
+  function updateSizeMatchButton() {
+    if (!sizeMatchBtn) return;
+    sizeMatchBtn.classList.toggle("is-active", Boolean(state.sizeMatchEnabled));
   }
 
   function flushAutoNest() {
@@ -818,6 +845,10 @@
   }
 
   function refreshOutputContext(callback) {
+    if (isPreviewMode()) {
+      if (callback) callback({ ok: false, preview: true, error: "CEP bridge not found." });
+      return;
+    }
     evalHost("nesterGetOutputContext()", function (result) {
       var parsed = parseJsonSafe(result);
       if (parsed && parsed.ok) applyOutputContext(parsed);
@@ -876,6 +907,10 @@
 
   function goToPlacedCopy(sourceKey) {
     if (!sourceKey) return;
+    if (isPreviewMode()) {
+      notifyPreviewMode();
+      return;
+    }
     var script = 'nesterGoToPlacedCopyBySourceKey("' + escapeForJsxString(sourceKey) + '")';
     evalHost(script, function (_result) {});
   }
@@ -902,9 +937,9 @@
       var placedLabel = item.unplacedQty > 0
         ? (item.placedQty + "/" + item.requestedQty)
         : String(item.placedQty);
-      var dimensionsClass = item.dimensionMismatch
-        ? "inventory-dimensions is-mismatch"
-        : "inventory-dimensions";
+      var dimensionsClass = "inventory-dimensions";
+      if (item.dimensionStatus === "warn") dimensionsClass += " is-warn";
+      else if (item.dimensionStatus === "error") dimensionsClass += " is-error";
       var dimensionsTitle = item.dimensionsTitle || item.dimensionsText;
 
       html.push(
@@ -946,6 +981,11 @@
   }
 
   function refreshResultNameFromHostForAction(callback) {
+    if (isPreviewMode()) {
+      notifyPreviewMode();
+      if (callback) callback(false);
+      return;
+    }
     var settings = getFormValues();
     refreshOutputContext(function (parsed) {
       if (!parsed) {
@@ -986,6 +1026,10 @@
   }
 
   function runExport(settings) {
+    if (isPreviewMode()) {
+      notifyPreviewMode();
+      return;
+    }
     settings = settings || getFormValues();
     var exportName = getResultNameText();
     if (!exportName) {
@@ -1044,6 +1088,11 @@
   }
 
   function runNester(settings) {
+    if (isPreviewMode()) {
+      notifyPreviewMode();
+      return;
+    }
+    var hadPendingOrderText = Boolean(state.orderEmailText);
     var payload = JSON.stringify(settings);
     var script = 'nesterRunWithSettings("' + escapeForJsxString(payload) + '")';
 
@@ -1068,6 +1117,7 @@
 
       applyOutputContext(parsed);
       refreshDisplayedResultName(settings);
+      if (hadPendingOrderText) clearPendingOrderState();
       writeStoredSettings(buildStoredState(settings));
     });
   }
@@ -1086,13 +1136,15 @@
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
     state.resultNameManualOverride = Boolean(stored.resultNameManualOverride);
     state.resultNameTemplateText = stored.resultNameTemplateText ? String(stored.resultNameTemplateText) : "";
-    state.orderEmailText = normalizeMultilineText(stored.orderEmailText);
+    state.orderEmailText = "";
+    state.sizeMatchEnabled = false;
 
     setFormValues(startSettings);
     updateExtraExportFolderButton();
     renderInventory(state.lastSourceItems);
-    if (orderEmailTextEl) orderEmailTextEl.value = state.orderEmailText;
-    setOrderEmailVisibility(Boolean(state.orderEmailText));
+    if (orderEmailTextEl) orderEmailTextEl.value = "";
+    setOrderEmailVisibility(false);
+    updateSizeMatchButton();
     if (state.outputBoundsText) refreshDisplayedResultName(startSettings);
     else {
       setResultSizeText(state.resultSizeText, {
@@ -1161,18 +1213,51 @@
 
     if (orderEmailBtn) {
       orderEmailBtn.addEventListener("click", function () {
-        setOrderEmailVisibility(true);
-        if (orderEmailTextEl) orderEmailTextEl.focus();
+        var willShow = !orderEmailWrapEl || Boolean(orderEmailWrapEl.hidden);
+        setOrderEmailVisibility(willShow);
+        if (willShow && orderEmailTextEl) orderEmailTextEl.focus();
+      });
+    }
+
+    if (orderEmailBackdropEl) {
+      orderEmailBackdropEl.addEventListener("click", function () {
+        setOrderEmailVisibility(false);
+      });
+    }
+
+    if (orderEmailCloseBtn) {
+      orderEmailCloseBtn.addEventListener("click", function () {
+        setOrderEmailVisibility(false);
       });
     }
 
     if (orderEmailTextEl) {
       orderEmailTextEl.addEventListener("input", function () {
         state.orderEmailText = normalizeMultilineText(orderEmailTextEl.value);
+        setOrderEmailVisibility(!orderEmailWrapEl || !orderEmailWrapEl.hidden);
         suspendInventoryInputSync = true;
         state.quantityOverrides = {};
         writeStoredSettings(buildStoredState(getFormValues()));
         scheduleAutoNest();
+      });
+      orderEmailTextEl.addEventListener("paste", function () {
+        window.setTimeout(function () {
+          state.orderEmailText = normalizeMultilineText(orderEmailTextEl.value);
+          suspendInventoryInputSync = true;
+          state.quantityOverrides = {};
+          writeStoredSettings(buildStoredState(getFormValues()));
+          scheduleAutoNest();
+          setOrderEmailVisibility(false);
+        }, 0);
+      });
+    }
+
+    if (sizeMatchBtn) {
+      sizeMatchBtn.addEventListener("click", function () {
+        state.sizeMatchEnabled = !state.sizeMatchEnabled;
+        updateSizeMatchButton();
+        writeStoredSettings(buildStoredState(getFormValues()));
+        if (state.lastSourceItems.length) scheduleAutoNest();
       });
     }
 
@@ -1214,6 +1299,12 @@
       });
     }
 
+    document.addEventListener("keydown", function (evt) {
+      if (evt.key === "Escape" && orderEmailWrapEl && !orderEmailWrapEl.hidden) {
+        setOrderEmailVisibility(false);
+      }
+    });
+
     formEl.addEventListener("submit", function (evt) {
       evt.preventDefault();
       cancelAutoNest();
@@ -1250,6 +1341,7 @@
       exitResultNameEditMode();
       setFormValues(combinedDefaults);
       state.quantityOverrides = {};
+      clearPendingOrderState();
       renderInventory(state.lastSourceItems);
       state.resultNameManualOverride = false;
       state.resultNameTemplateText = "";
@@ -1258,6 +1350,11 @@
       else setResultSizeText("", { manualOverride: false, templateText: "" });
       writeStoredSettings(buildStoredState(combinedDefaults));
     });
+  }
+
+  if (isPreviewMode()) {
+    initWithDefaults(DEFAULTS);
+    return;
   }
 
   evalHost("nesterGetDefaultSettings()", function (raw) {

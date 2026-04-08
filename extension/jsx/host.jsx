@@ -307,16 +307,16 @@ function exceedsRelativeTolerance(actualValue, expectedValue, tolerance) {
     return Math.abs(actualValue - expectedValue) / expectedValue > tolerance;
 }
 
-function hasOrderDimensionMismatch(actualWidthPt, actualHeightPt, orderWidthIn, orderHeightIn) {
-    if (!(orderWidthIn > 0) || !(orderHeightIn > 0)) return false;
+function getOrderDimensionStatus(actualWidthPt, actualHeightPt, orderWidthIn, orderHeightIn, sizeMatchEnabled) {
+    if (!sizeMatchEnabled) return "none";
+    if (!(orderWidthIn > 0) || !(orderHeightIn > 0) || !(actualWidthPt > 0) || !(actualHeightPt > 0)) return "none";
 
-    var actualLong = Math.max(actualWidthPt, actualHeightPt) / PT_PER_IN;
-    var actualShort = Math.min(actualWidthPt, actualHeightPt) / PT_PER_IN;
-    var orderLong = Math.max(orderWidthIn, orderHeightIn);
-    var orderShort = Math.min(orderWidthIn, orderHeightIn);
+    var scaledHeightIn = (actualHeightPt / actualWidthPt) * orderWidthIn;
+    var delta = Math.abs(scaledHeightIn - orderHeightIn) / orderHeightIn;
 
-    return exceedsRelativeTolerance(actualLong, orderLong, 0.05) ||
-        exceedsRelativeTolerance(actualShort, orderShort, 0.05);
+    if (delta > 0.10) return "error";
+    if (delta >= 0.05) return "warn";
+    return "none";
 }
 
 function getItemFileName(item) {
@@ -690,7 +690,7 @@ function hideSourceLayers(doc) {
 // Source normalization
 // =====================================================
 
-function collectPlacedItems(doc, quantityOverrides, orderLookup) {
+function collectPlacedItems(doc, quantityOverrides, orderLookup, sizeMatchEnabled) {
     var result = [];
     var ordinal = 0;
 
@@ -723,7 +723,7 @@ function collectPlacedItems(doc, quantityOverrides, orderLookup) {
             height: sz.height,
             orderWidthIn: orderInfo ? orderInfo.widthIn : 0,
             orderHeightIn: orderInfo ? orderInfo.heightIn : 0,
-            dimensionMismatch: orderInfo ? hasOrderDimensionMismatch(sz.width, sz.height, orderInfo.widthIn, orderInfo.heightIn) : false,
+            dimensionStatus: orderInfo ? getOrderDimensionStatus(sz.width, sz.height, orderInfo.widthIn, orderInfo.heightIn, sizeMatchEnabled) : "none",
             area: areaOf(sz.width, sz.height),
             longSide: longSide(sz.width, sz.height),
             shortSide: shortSide(sz.width, sz.height)
@@ -737,7 +737,7 @@ function collectPlacedItems(doc, quantityOverrides, orderLookup) {
 
 function collectAndNormalizeSources(doc, settings) {
     var orderLookup = parseOrderEmailLookup(settings.orderEmailText);
-    var sources = collectPlacedItems(doc, settings.quantityOverrides, orderLookup);
+    var sources = collectPlacedItems(doc, settings.quantityOverrides, orderLookup, settings.sizeMatchEnabled);
     if (!sources || sources.length === 0) throw new Error("No placed items found in the current document.");
     return sources;
 }
@@ -2937,9 +2937,6 @@ function buildSourceQuantitySummary(result) {
         var orderDimensionsText = (src.orderWidthIn > 0 && src.orderHeightIn > 0)
             ? (src.orderWidthIn.toFixed(2) + " x " + src.orderHeightIn.toFixed(2))
             : "";
-        var dimensionsTitle = src.dimensionMismatch && orderDimensionsText
-            ? ("File: " + dimensionsText + " | Order: " + orderDimensionsText)
-            : dimensionsText;
         byKey[src.key] = {
             id: src.id,
             key: src.key,
@@ -2952,8 +2949,8 @@ function buildSourceQuantitySummary(result) {
             widthIn: parseFloat(inToStr(src.width)),
             heightIn: parseFloat(inToStr(src.height)),
             dimensionsText: dimensionsText,
-            dimensionsTitle: dimensionsTitle,
-            dimensionMismatch: Boolean(src.dimensionMismatch)
+            dimensionsTitle: orderDimensionsText || dimensionsText,
+            dimensionStatus: src.dimensionStatus || "none"
         };
         out.push(byKey[src.key]);
     }
@@ -3328,6 +3325,7 @@ function normalizeSettingsFromPanel(input) {
     s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
     s.quantityOverrides = normalizeQuantityOverrides(input.quantityOverrides);
     s.orderEmailText = String(input.orderEmailText || "");
+    s.sizeMatchEnabled = _boolOr(input.sizeMatchEnabled, false);
     return s;
 }
 
