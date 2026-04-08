@@ -307,15 +307,13 @@ function exceedsRelativeTolerance(actualValue, expectedValue, tolerance) {
     return Math.abs(actualValue - expectedValue) / expectedValue > tolerance;
 }
 
-function getOrderDimensionStatus(actualWidthPt, actualHeightPt, orderWidthIn, orderHeightIn, sizeMatchEnabled) {
-    if (!sizeMatchEnabled) return "none";
+function getOrderDimensionStatus(actualWidthPt, actualHeightPt, orderWidthIn, orderHeightIn) {
     if (!(orderWidthIn > 0) || !(orderHeightIn > 0) || !(actualWidthPt > 0) || !(actualHeightPt > 0)) return "none";
 
     var scaledHeightIn = (actualHeightPt / actualWidthPt) * orderWidthIn;
     var delta = Math.abs(scaledHeightIn - orderHeightIn) / orderHeightIn;
 
-    if (delta > 0.10) return "error";
-    if (delta >= 0.05) return "warn";
+    if (delta > 0.05) return "error";
     return "none";
 }
 
@@ -690,7 +688,7 @@ function hideSourceLayers(doc) {
 // Source normalization
 // =====================================================
 
-function collectPlacedItems(doc, quantityOverrides, orderLookup, sizeMatchEnabled) {
+function collectPlacedItems(doc, quantityOverrides, orderLookup) {
     var result = [];
     var ordinal = 0;
 
@@ -723,7 +721,7 @@ function collectPlacedItems(doc, quantityOverrides, orderLookup, sizeMatchEnable
             height: sz.height,
             orderWidthIn: orderInfo ? orderInfo.widthIn : 0,
             orderHeightIn: orderInfo ? orderInfo.heightIn : 0,
-            dimensionStatus: orderInfo ? getOrderDimensionStatus(sz.width, sz.height, orderInfo.widthIn, orderInfo.heightIn, sizeMatchEnabled) : "none",
+            dimensionStatus: orderInfo ? getOrderDimensionStatus(sz.width, sz.height, orderInfo.widthIn, orderInfo.heightIn) : "none",
             area: areaOf(sz.width, sz.height),
             longSide: longSide(sz.width, sz.height),
             shortSide: shortSide(sz.width, sz.height)
@@ -737,7 +735,7 @@ function collectPlacedItems(doc, quantityOverrides, orderLookup, sizeMatchEnable
 
 function collectAndNormalizeSources(doc, settings) {
     var orderLookup = parseOrderEmailLookup(settings.orderEmailText);
-    var sources = collectPlacedItems(doc, settings.quantityOverrides, orderLookup, settings.sizeMatchEnabled);
+    var sources = collectPlacedItems(doc, settings.quantityOverrides, orderLookup);
     if (!sources || sources.length === 0) throw new Error("No placed items found in the current document.");
     return sources;
 }
@@ -3325,7 +3323,6 @@ function normalizeSettingsFromPanel(input) {
     s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
     s.quantityOverrides = normalizeQuantityOverrides(input.quantityOverrides);
     s.orderEmailText = String(input.orderEmailText || "");
-    s.sizeMatchEnabled = _boolOr(input.sizeMatchEnabled, false);
     return s;
 }
 

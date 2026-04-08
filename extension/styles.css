@@ -481,17 +481,6 @@ button:disabled {
   }
 }
 
-.inventory-tool-btn {
-  min-width: 0;
-  padding: 4px 10px;
-  border-radius: 10px;
-  font-size: 10px;
-}
-
-.inventory-tool-btn.is-active {
-  background: linear-gradient(180deg, #304156 0%, #223142 100%);
-}
-
 .order-email-modal[hidden] {
   display: none !important;
 }
@@ -548,12 +537,6 @@ button:disabled {
 
 .order-email-close:hover {
   background: rgba(255, 255, 255, 0.14);
-}
-
-.order-email-actions {
-  display: flex;
-  justify-content: flex-start;
-  margin-top: 8px;
 }
 
 .order-email-text {
@@ -685,7 +668,7 @@ button:disabled {
   color: #9ca9bb;
   font-size: 11px;
   line-height: 1;
-  white-space: nowrap;hekn
+  white-space: nowrap;
 }
 
 .inventory-nameqty,
@@ -697,10 +680,6 @@ button:disabled {
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.inventory-dimensions.is-warn {
-  color: #f2cd62;
 }
 
 .inventory-dimensions.is-error {

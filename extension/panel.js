@@ -14,7 +14,6 @@
   var inventoryListEl = document.getElementById("inventory-list");
   var inventoryEmptyEl = document.getElementById("inventory-empty");
   var inventoryMetaEl = document.getElementById("inventory-meta");
-  var sizeMatchBtn = document.getElementById("btn-size-match");
   var orderEmailBtn = document.getElementById("btn-order-email");
   var orderEmailWrapEl = document.getElementById("order-email-wrap");
   var orderEmailBackdropEl = document.getElementById("order-email-backdrop");
@@ -84,8 +83,7 @@
     sourceFolderLabel: "",
     resultNameManualOverride: false,
     resultNameTemplateText: "",
-    orderEmailText: "",
-    sizeMatchEnabled: false
+    orderEmailText: ""
   };
   var resultNameFeedbackTimer = null;
   var resultNameClickTimer = null;
@@ -314,7 +312,6 @@
       resultNameTemplateText: state.resultNameTemplateText
     });
     delete out.orderEmailText;
-    delete out.sizeMatchEnabled;
     return out;
   }
 
@@ -375,7 +372,6 @@
     if (!suspendInventoryInputSync) syncOverridesFromInputs();
     settings.quantityOverrides = sanitizeQuantityOverrides(state.quantityOverrides);
     settings.orderEmailText = state.orderEmailText;
-    settings.sizeMatchEnabled = state.sizeMatchEnabled;
     return settings;
   }
 
@@ -505,7 +501,6 @@
       exportBtn.textContent = isExportBusy ? "Exporting..." : "EXPORT";
     }
     if (exportFolderBtn) exportFolderBtn.disabled = isBusy;
-    if (sizeMatchBtn) sizeMatchBtn.disabled = isBusy;
     if (orderEmailBtn) orderEmailBtn.disabled = isBusy;
     if (regenerateNameBtn) regenerateNameBtn.disabled = isBusy || !state.outputBoundsText;
 
@@ -526,15 +521,8 @@
 
   function clearPendingOrderState() {
     state.orderEmailText = "";
-    state.sizeMatchEnabled = false;
     if (orderEmailTextEl) orderEmailTextEl.value = "";
-    updateSizeMatchButton();
     setOrderEmailVisibility(false);
-  }
-
-  function updateSizeMatchButton() {
-    if (!sizeMatchBtn) return;
-    sizeMatchBtn.classList.toggle("is-active", Boolean(state.sizeMatchEnabled));
   }
 
   function flushAutoNest() {
@@ -938,8 +926,7 @@
         ? (item.placedQty + "/" + item.requestedQty)
         : String(item.placedQty);
       var dimensionsClass = "inventory-dimensions";
-      if (item.dimensionStatus === "warn") dimensionsClass += " is-warn";
-      else if (item.dimensionStatus === "error") dimensionsClass += " is-error";
+      if (item.dimensionStatus === "error") dimensionsClass += " is-error";
       var dimensionsTitle = item.dimensionsTitle || item.dimensionsText;
 
       html.push(
@@ -1137,14 +1124,12 @@
     state.resultNameManualOverride = Boolean(stored.resultNameManualOverride);
     state.resultNameTemplateText = stored.resultNameTemplateText ? String(stored.resultNameTemplateText) : "";
     state.orderEmailText = "";
-    state.sizeMatchEnabled = false;
 
     setFormValues(startSettings);
     updateExtraExportFolderButton();
     renderInventory(state.lastSourceItems);
     if (orderEmailTextEl) orderEmailTextEl.value = "";
     setOrderEmailVisibility(false);
-    updateSizeMatchButton();
     if (state.outputBoundsText) refreshDisplayedResultName(startSettings);
     else {
       setResultSizeText(state.resultSizeText, {
@@ -1249,15 +1234,6 @@
           scheduleAutoNest();
           setOrderEmailVisibility(false);
         }, 0);
-      });
-    }
-
-    if (sizeMatchBtn) {
-      sizeMatchBtn.addEventListener("click", function () {
-        state.sizeMatchEnabled = !state.sizeMatchEnabled;
-        updateSizeMatchButton();
-        writeStoredSettings(buildStoredState(getFormValues()));
-        if (state.lastSourceItems.length) scheduleAutoNest();
       });
     }
 
