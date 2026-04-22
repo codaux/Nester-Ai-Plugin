@@ -436,6 +436,170 @@ function sortNumericDesc(a, b) {
     return b - a;
 }
 
+function roundMetricKey(value) {
+    return Math.round(Number(value || 0) * 1000);
+}
+
+function pushUniqueOrientationByDims(list, seen, option, width, height) {
+    var key = roundMetricKey(width) + "x" + roundMetricKey(height);
+    if (seen[key]) return;
+    seen[key] = true;
+    list.push(option);
+}
+
+function buildItemOrientationOptions(src, settings) {
+    var out = [];
+    var seen = {};
+
+    pushUniqueOrientationByDims(
+        out,
+        seen,
+        { rotatedInside: false, cellW: src.width, cellH: src.height },
+        src.width,
+        src.height
+    );
+
+    if (settings.allowItemRotationInBlock) {
+        pushUniqueOrientationByDims(
+            out,
+            seen,
+            { rotatedInside: true, cellW: src.height, cellH: src.width },
+            src.height,
+            src.width
+        );
+    }
+
+    return out;
+}
+
+function buildBlockOrientationOptions(block, settings) {
+    var out = [];
+    var seen = {};
+
+    pushUniqueOrientationByDims(
+        out,
+        seen,
+        { rotatedOnSheet: false, w: block.blockW, h: block.blockH },
+        block.blockW,
+        block.blockH
+    );
+
+    if (settings.allowBlockRotationOnSheet) {
+        pushUniqueOrientationByDims(
+            out,
+            seen,
+            { rotatedOnSheet: true, w: block.blockH, h: block.blockW },
+            block.blockH,
+            block.blockW
+        );
+    }
+
+    return out;
+}
+
+function getCanonicalRenderRotationDeg(rotatedInside, rotatedOnSheet) {
+    var quarterTurns = 0;
+    if (rotatedInside) quarterTurns += 1;
+    if (rotatedOnSheet) quarterTurns += 1;
+    return (quarterTurns % 2 === 0) ? 0 : 90;
+}
+
+function getMaxColumnsForCellWidth(cellW, settings) {
+    var spacing = inToPt(settings.spacingIn);
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    if (cellW <= EPS) return 1;
+    return Math.max(1, Math.floor((sheetWidth + spacing + EPS) / (cellW + spacing)));
+}
+
+function getActualSheetWidth(settings) {
+    return inToPt(settings.sheetWidthIn);
+}
+
+function getActualMaxLength(settings) {
+    return inToPt(settings.maxLengthIn);
+}
+
+function getPackingSheetWidth(settings) {
+    return getActualSheetWidth(settings) + inToPt(settings.spacingIn);
+}
+
+function getPackingMaxLength(settings) {
+    return getActualMaxLength(settings) + inToPt(settings.spacingIn);
+}
+
+function getActualUsedLength(layoutState, settings) {
+    return Math.max(0, (layoutState && layoutState.usedLength ? layoutState.usedLength : 0) - inToPt(settings.spacingIn));
+}
+
+function buildShelfAlignedPartitions(src, settings, maxBlocks) {
+    var out = [];
+    var orientations = buildItemOrientationOptions(src, settings);
+
+    for (var i = 0; i < orientations.length; i++) {
+        var rowCapacity = getMaxColumnsForCellWidth(orientations[i].cellW, settings);
+        if (rowCapacity <= 1 || rowCapacity >= src.qty) continue;
+
+        var fullRows = Math.floor(src.qty / rowCapacity);
+        var remainder = src.qty % rowCapacity;
+        var partition = [];
+        var r;
+
+        if (fullRows <= 0) continue;
+
+        if (remainder > 0) {
+            uniquePushPartition(out, [fullRows * rowCapacity, remainder]);
+        }
+
+        if ((fullRows + (remainder > 0 ? 1 : 0)) <= maxBlocks) {
+            for (r = 0; r < fullRows; r++) partition.push(rowCapacity);
+            if (remainder > 0) partition.push(remainder);
+            partition.sort(sortNumericDesc);
+            uniquePushPartition(out, partition);
+        }
+
+        if (fullRows >= 2 && remainder > 0 && fullRows <= maxBlocks) {
+            partition = [];
+            for (r = 0; r < fullRows - 1; r++) partition.push(rowCapacity);
+            partition.push(rowCapacity + remainder);
+            partition.sort(sortNumericDesc);
+            uniquePushPartition(out, partition);
+        }
+    }
+
+    return out;
+}
+
+function estimatePlanShelfPenalty(layouts, settings, isDominant) {
+    var nonTrivialTailCount = 0;
+    var fullWidthTemplateCount = 0;
+    var underfilledPenalty = 0;
+
+    for (var i = 0; i < layouts.length; i++) {
+        var template = layouts[i];
+        var rowCapacity = getMaxColumnsForCellWidth(template.cellW, settings);
+        if (rowCapacity <= 1) continue;
+
+        var widthMiss = Math.max(0, rowCapacity - template.cols) / Math.max(rowCapacity, 1);
+        var multiRow = template.count > rowCapacity;
+        var nonTrivialTail = template.count > 1 && template.cols < rowCapacity;
+
+        if (template.cols >= rowCapacity) fullWidthTemplateCount += 1;
+        if (multiRow && template.cols < rowCapacity) underfilledPenalty += 1.4 + (widthMiss * 1.8);
+        else if (nonTrivialTail) underfilledPenalty += 0.45 + (widthMiss * 0.9);
+
+        if (nonTrivialTail) nonTrivialTailCount += 1;
+    }
+
+    if (nonTrivialTailCount > 1) underfilledPenalty += (nonTrivialTailCount - 1) * 2.8;
+    if (isDominant && fullWidthTemplateCount > 0) underfilledPenalty *= 1.45;
+
+    return {
+        nonTrivialTailCount: nonTrivialTailCount,
+        fullWidthTemplateCount: fullWidthTemplateCount,
+        penalty: underfilledPenalty
+    };
+}
+
 // =====================================================
 // JSON helpers
 // =====================================================
@@ -939,14 +1103,11 @@ function chooseBestGridForCount(src, count, settings, personality, favorWide) {
     var continuityBias = personality.continuityWeight / 100.0;
 
     var candidates = [];
-    var orientations = [{ rotatedInside: false, cellW: src.width, cellH: src.height }];
-
-    if (settings.allowItemRotationInBlock) {
-        orientations.push({ rotatedInside: true, cellW: src.height, cellH: src.width });
-    }
+    var orientations = buildItemOrientationOptions(src, settings);
 
     for (var o = 0; o < orientations.length; o++) {
         var ori = orientations[o];
+        var rowCapacity = getMaxColumnsForCellWidth(ori.cellW, settings);
 
         for (var cols = 1; cols <= count; cols++) {
             var rows = Math.ceil(count / cols);
@@ -961,6 +1122,9 @@ function chooseBestGridForCount(src, count, settings, personality, favorWide) {
             var widthFill = blockW / Math.max(sheetWidth, EPS);
             var heightFill = blockH / Math.max(maxLength, EPS);
             var aspectPenalty = Math.max(0, ratio - maxAspect);
+            var shelfMiss = (rowCapacity > 1 && count > rowCapacity && cols < rowCapacity)
+                ? ((rowCapacity - cols) / Math.max(rowCapacity, 1))
+                : 0;
             var widePenalty = favorWide && rows > personality.dominantShelfRows
                 ? (rows - personality.dominantShelfRows) * 10000
                 : 0;
@@ -971,6 +1135,7 @@ function chooseBestGridForCount(src, count, settings, personality, favorWide) {
                 ((1 - widthFill) * 25000 * (0.55 + (widthBias * 0.45))) +
                 (heightFill * 3200) +
                 (ratio * 420) +
+                (shelfMiss * (9000 + (widthBias * 5000))) +
                 (ori.rotatedInside ? 180 : 0) +
                 widePenalty;
 
@@ -1033,10 +1198,13 @@ function buildSourcePlanCandidates(src, sourceCache, settings, personality, effo
     if (maxBlocks < 1) maxBlocks = 1;
 
     var partitions = generatePartitionCandidates(src.qty, maxBlocks);
+    var shelfPartitions = buildShelfAlignedPartitions(src, settings, maxBlocks);
     var plans = [];
     var seen = {};
     var widthBias = personality.widthFillPriority / 100.0;
     var continuityBias = personality.continuityWeight / 100.0;
+
+    for (var sp = 0; sp < shelfPartitions.length; sp++) uniquePushPartition(partitions, shelfPartitions[sp]);
 
     for (var p = 0; p < partitions.length; p++) {
         var part = partitions[p];
@@ -1071,12 +1239,14 @@ function buildSourcePlanCandidates(src, sourceCache, settings, personality, effo
         if (seen[planKey]) continue;
         seen[planKey] = true;
 
+        var shelfProfile = estimatePlanShelfPenalty(layouts, settings, sourceCache.isDominant);
         var planScore =
             (layouts.length * (1850 + (continuityBias * 950))) +
             (totalEmpty * 1650) +
             (totalAspect * totalAspect * 14000) +
             (maxHeight * 2.2) +
             ((1 - (totalWidthFill / Math.max(layouts.length, 1))) * 26000 * (0.6 + (widthBias * 0.4))) +
+            (shelfProfile.penalty * (5200 + (continuityBias * 2400))) +
             (totalArea * 0.00001);
 
         plans.push({
@@ -1084,7 +1254,8 @@ function buildSourcePlanCandidates(src, sourceCache, settings, personality, effo
             planScore: planScore,
             partition: cloneArray(part),
             templates: cloneArray(layouts),
-            isDominant: sourceCache.isDominant
+            isDominant: sourceCache.isDominant,
+            shelfPenalty: shelfProfile.penalty
         });
     }
 
@@ -1451,12 +1622,12 @@ function estimateCavityPenaltyForPlacement(freeRect, pw, ph) {
 
 function getPlacementFootprint(x, y, contentW, contentH, settings) {
     var spacing = inToPt(settings.spacingIn);
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var maxLength = inToPt(settings.maxLengthIn);
+    var packingWidth = getPackingSheetWidth(settings);
+    var packingLength = getPackingMaxLength(settings);
     var rightEdge = x + contentW;
     var bottomEdge = y + contentH;
-    var rightGap = (rightEdge >= sheetWidth - EPS) ? 0 : spacing;
-    var bottomGap = (bottomEdge >= maxLength - EPS) ? 0 : spacing;
+    var rightGap = (rightEdge >= packingWidth - EPS) ? 0 : spacing;
+    var bottomGap = (bottomEdge >= packingLength - EPS) ? 0 : spacing;
 
     return {
         x: x,
@@ -1471,19 +1642,15 @@ function getPlacementFootprint(x, y, contentW, contentH, settings) {
 }
 
 function blockFitsRect(block, rect, settings) {
-    var options = [{ rotatedOnSheet: false, contentW: block.blockW, contentH: block.blockH }];
-
-    if (settings.allowBlockRotationOnSheet) {
-        options.push({ rotatedOnSheet: true, contentW: block.blockH, contentH: block.blockW });
-    }
+    var options = buildBlockOrientationOptions(block, settings);
 
     for (var i = 0; i < options.length; i++) {
-        var footprint = getPlacementFootprint(rect.x, rect.y, options[i].contentW, options[i].contentH, settings);
+        var footprint = getPlacementFootprint(rect.x, rect.y, options[i].w, options[i].h, settings);
         if (footprint.w <= rect.w + EPS && footprint.h <= rect.h + EPS) {
             return {
                 rotatedOnSheet: options[i].rotatedOnSheet,
-                contentW: options[i].contentW,
-                contentH: options[i].contentH,
+                contentW: options[i].w,
+                contentH: options[i].h,
                 w: footprint.w,
                 h: footprint.h,
                 rightGap: footprint.rightGap,
@@ -1568,11 +1735,7 @@ function computePlacementScore(freeRect, pw, ph, currentUsedLength, placedSoFar,
 }
 
 function findBestPlacementForBlock(block, freeRects, currentUsedLength, placedSoFar, settings, personality, effortConfig, remainingBlocks, preferredRect) {
-    var orientations = [{ rotatedOnSheet: false, w: block.blockW, h: block.blockH }];
-
-    if (settings.allowBlockRotationOnSheet) {
-        orientations.push({ rotatedOnSheet: true, w: block.blockH, h: block.blockW });
-    }
+    var orientations = buildBlockOrientationOptions(block, settings);
 
     var best = null;
 
@@ -1656,9 +1819,9 @@ function buildLayoutState(placed, unplaced, freeRects, usedLength, strategyName,
 }
 
 function nestBlocksByOrder(order, strategyName, stageName, settings, personality, effortConfig) {
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var maxLength = inToPt(settings.maxLengthIn);
-    var freeRects = [{ x: 0, y: 0, w: sheetWidth, h: maxLength }];
+    var packingWidth = getPackingSheetWidth(settings);
+    var packingLength = getPackingMaxLength(settings);
+    var freeRects = [{ x: 0, y: 0, w: packingWidth, h: packingLength }];
     var placed = [];
     var unplaced = [];
     var usedLength = 0;
@@ -1735,10 +1898,25 @@ function runBasicBackfill(layoutState, settings, personality, effortConfig, stag
 // Metrics / validation / scoring
 // =====================================================
 
-function getRequiredPlacedRect(placedBlock, settings) {
+function getPlacedBlockContentSize(placedBlock) {
     var w = placedBlock.rotatedOnSheet ? placedBlock.block.blockH : placedBlock.block.blockW;
     var h = placedBlock.rotatedOnSheet ? placedBlock.block.blockW : placedBlock.block.blockH;
-    return getPlacementFootprint(placedBlock.x, placedBlock.y, w, h, settings);
+    return { w: w, h: h };
+}
+
+function getContentPlacedRect(placedBlock) {
+    var size = getPlacedBlockContentSize(placedBlock);
+    return {
+        x: placedBlock.x,
+        y: placedBlock.y,
+        w: size.w,
+        h: size.h
+    };
+}
+
+function getReservedPlacedRect(placedBlock, settings) {
+    var size = getPlacedBlockContentSize(placedBlock);
+    return getPlacementFootprint(placedBlock.x, placedBlock.y, size.w, size.h, settings);
 }
 
 function buildLooseFitCandidates(layoutState, sourcePlanCache) {
@@ -1759,8 +1937,8 @@ function buildLooseFitCandidates(layoutState, sourcePlanCache) {
 
 function analyzeWidthUtilizationBands(layoutState, settings) {
     var bandCount = 4;
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var usedLength = Math.max(layoutState.usedLength, inToPt(settings.spacingIn));
+    var sheetWidth = getActualSheetWidth(settings);
+    var usedLength = Math.max(getActualUsedLength(layoutState, settings), inToPt(settings.spacingIn));
     var bands = [];
 
     for (var i = 0; i < bandCount; i++) {
@@ -1770,7 +1948,7 @@ function analyzeWidthUtilizationBands(layoutState, settings) {
 
         for (var j = 0; j < layoutState.placed.length; j++) {
             var p = layoutState.placed[j];
-            var rect = getRequiredPlacedRect(p, settings);
+            var rect = getContentPlacedRect(p);
             var overlapTop = Math.max(rect.y, bandTop);
             var overlapBottom = Math.min(rect.y + rect.h, bandBottom);
             if (overlapBottom <= overlapTop + EPS) continue;
@@ -1784,7 +1962,7 @@ function analyzeWidthUtilizationBands(layoutState, settings) {
 }
 
 function analyzeFreeRectangles(layoutState, settings, sourcePlanCache) {
-    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var sheetWidth = getPackingSheetWidth(settings);
     var usedLength = Math.max(layoutState.usedLength, inToPt(settings.spacingIn));
     var capacityArea = Math.max(sheetWidth * usedLength, EPS);
     var looseFits = buildLooseFitCandidates(layoutState, sourcePlanCache);
@@ -1861,6 +2039,73 @@ function analyzeFreeRectangles(layoutState, settings, sourcePlanCache) {
     };
 }
 
+function analyzeShelfRows(layoutState, settings) {
+    var sheetWidth = getActualSheetWidth(settings);
+    var rowTolerance = Math.max(inToPt(settings.spacingIn) * 0.5, 0.5);
+    var rows = [];
+
+    for (var i = 0; i < layoutState.placed.length; i++) {
+        var rect = getContentPlacedRect(layoutState.placed[i]);
+        var target = null;
+
+        for (var r = 0; r < rows.length; r++) {
+            if (Math.abs(rows[r].y - rect.y) <= rowTolerance) {
+                target = rows[r];
+                break;
+            }
+        }
+
+        if (!target) {
+            target = { y: rect.y, rects: [] };
+            rows.push(target);
+        }
+
+        target.rects.push(rect);
+    }
+
+    rows.sort(function(a, b) { return a.y - b.y; });
+
+    var previousFill = null;
+    var inversionScore = 0;
+    var gapScore = 0;
+    var rowFills = [];
+
+    for (i = 0; i < rows.length; i++) {
+        var rowRects = rows[i].rects;
+        var coverage = 0;
+        var minX = null;
+        var maxRight = null;
+
+        rowRects.sort(function(a, b) { return a.x - b.x; });
+
+        for (r = 0; r < rowRects.length; r++) {
+            coverage += rowRects[r].w;
+            if (minX === null || rowRects[r].x < minX) minX = rowRects[r].x;
+            if (maxRight === null || (rowRects[r].x + rowRects[r].w) > maxRight) maxRight = rowRects[r].x + rowRects[r].w;
+        }
+
+        var fill = clamp(coverage / Math.max(sheetWidth, EPS), 0, 1);
+        var span = (minX === null || maxRight === null) ? 0 : Math.max(0, maxRight - minX);
+        var rowGap = Math.max(0, span - coverage);
+
+        rowFills.push(fill);
+        gapScore += rowGap / Math.max(sheetWidth, EPS);
+
+        if (previousFill !== null && fill > previousFill + 0.035) {
+            inversionScore += (fill - previousFill);
+        }
+
+        previousFill = fill;
+    }
+
+    return {
+        rowCount: rows.length,
+        rowFills: rowFills,
+        inversionScore: inversionScore,
+        gapScore: gapScore
+    };
+}
+
 function sortPlacedReadingOrder(list) {
     list.sort(function(a, b) {
         if (Math.abs(a.y - b.y) > EPS) return a.y - b.y;
@@ -1870,14 +2115,15 @@ function sortPlacedReadingOrder(list) {
 }
 
 function evaluateSanityMetrics(layoutState, settings, sourcePlanCache) {
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var usedLength = Math.max(layoutState.usedLength, EPS);
+    var sheetWidth = getActualSheetWidth(settings);
+    var usedLength = Math.max(getActualUsedLength(layoutState, settings), EPS);
     var usedArea = 0;
     var reading = clonePlacedList(layoutState.placed || []);
     var sourceSwitches = 0;
     var sourceFragments = {};
     var prevSource = null;
     var holeMetrics = analyzeFreeRectangles(layoutState, settings, sourcePlanCache);
+    var shelfMetrics = analyzeShelfRows(layoutState, settings);
 
     sortPlacedReadingOrder(reading);
 
@@ -1914,41 +2160,45 @@ function evaluateSanityMetrics(layoutState, settings, sourcePlanCache) {
         fragmentationScore: ((layoutState.freeRects.length * 0.04) + (holeMetrics.skinnyFragmentArea / capacityArea)),
         sourceFragmentationScore: ((sourceSwitches * 0.08) + (fragmentCount * 0.05)),
         denseRegionGapScore: ((holeMetrics.centralHoleScore * 0.01) + (bandVariance * 0.6)),
+        shelfInversionScore: shelfMetrics.inversionScore,
+        shelfGapScore: shelfMetrics.gapScore,
         widthWasteScore: (1 - utilization),
         sourceSwitches: sourceSwitches,
         sourceFragments: fragmentCount,
-        holeMetrics: holeMetrics
+        holeMetrics: holeMetrics,
+        shelfMetrics: shelfMetrics
     };
 }
 
 function validateLayoutState(layoutState, settings) {
     var valid = true;
     var reasons = [];
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var maxLength = inToPt(settings.maxLengthIn);
-    var requiredRects = [];
+    var sheetWidth = getActualSheetWidth(settings);
+    var maxLength = getActualMaxLength(settings);
+    var reservedRects = [];
 
     for (var i = 0; i < layoutState.placed.length; i++) {
         var p = layoutState.placed[i];
-        var req = getRequiredPlacedRect(p, settings);
-        requiredRects.push(req);
+        var contentRect = getContentPlacedRect(p);
+        var reservedRect = getReservedPlacedRect(p, settings);
+        reservedRects.push(reservedRect);
 
-        if (req.x < -EPS || req.y < -EPS) {
+        if (contentRect.x < -EPS || contentRect.y < -EPS) {
             valid = false;
             reasons.push("Negative placement bounds");
             break;
         }
-        if (req.x + req.w > sheetWidth + EPS) {
+        if (contentRect.x + contentRect.w > sheetWidth + EPS) {
             valid = false;
             reasons.push("Sheet width exceeded");
             break;
         }
-        if (req.y + req.h > maxLength + EPS) {
+        if (contentRect.y + contentRect.h > maxLength + EPS) {
             valid = false;
             reasons.push("Sheet length exceeded");
             break;
         }
-        if (p.paddedW + EPS < req.w || p.paddedH + EPS < req.h) {
+        if (p.paddedW + EPS < reservedRect.w || p.paddedH + EPS < reservedRect.h) {
             valid = false;
             reasons.push("Configured spacing lost");
             break;
@@ -1956,9 +2206,9 @@ function validateLayoutState(layoutState, settings) {
     }
 
     if (valid) {
-        for (var a = 0; a < requiredRects.length; a++) {
-            for (var b = a + 1; b < requiredRects.length; b++) {
-                if (intersects(requiredRects[a], requiredRects[b])) {
+        for (var a = 0; a < reservedRects.length; a++) {
+            for (var b = a + 1; b < reservedRects.length; b++) {
+                if (intersects(reservedRects[a], reservedRects[b])) {
                     valid = false;
                     reasons.push("Placed blocks overlap");
                     break;
@@ -1986,7 +2236,14 @@ function scoreCandidateLayout(layoutState, settings, personality) {
         )
         : 0;
     var continuityPenalty = sanity ? Math.round(sanity.sourceFragmentationScore * 12000) : 0;
-    var fragmentationPenalty = sanity ? Math.round((sanity.fragmentationScore * 12000) + (sanity.widthWasteScore * 6000)) : 0;
+    var fragmentationPenalty = sanity
+        ? Math.round(
+            (sanity.fragmentationScore * 12000) +
+            (sanity.widthWasteScore * 6000) +
+            (sanity.shelfInversionScore * 26000) +
+            (sanity.shelfGapScore * 18000)
+        )
+        : 0;
     var bonuses = (personality && personality.name === "Ordered") ? 50 : 0;
 
     var total =
@@ -2031,6 +2288,13 @@ function compareScoreObjects(a, b) {
     if (!a && !b) return 0;
     if (!a) return 1;
     if (!b) return -1;
+    if (a.rankTuple && b.rankTuple) {
+        var len = Math.min(a.rankTuple.length, b.rankTuple.length);
+        for (var i = 0; i < len; i++) {
+            if (a.rankTuple[i] < b.rankTuple[i]) return -1;
+            if (a.rankTuple[i] > b.rankTuple[i]) return 1;
+        }
+    }
     if (a.total < b.total) return -1;
     if (a.total > b.total) return 1;
     return 0;
@@ -2878,10 +3142,7 @@ function renderPlacedBlocks(layoutState, outputLayer, settings) {
 
             var itemX = pb.x + tr.x;
             var itemY = pb.y + tr.y;
-            var rotationDeg = 0;
-            if (b.rotatedInside) rotationDeg += 90;
-            if (pb.rotatedOnSheet) rotationDeg += 90;
-            rotationDeg = rotationDeg % 360;
+            var rotationDeg = getCanonicalRenderRotationDeg(b.rotatedInside, pb.rotatedOnSheet);
 
             placeSingleCopy(b.sourceRef, outputLayer, itemX, itemY, rotationDeg, b.sourceKey);
         }
@@ -3452,13 +3713,23 @@ function _testScoreOrdering() {
     };
 }
 
+function _testCanonicalRotation() {
+    return {
+        zero: getCanonicalRenderRotationDeg(false, false),
+        ninety: getCanonicalRenderRotationDeg(true, false),
+        oneEightyCollapsed: getCanonicalRenderRotationDeg(true, true),
+        squareOrientations: buildItemOrientationOptions({ width: 10, height: 10 }, { allowItemRotationInBlock: true }).length
+    };
+}
+
 function nesterRunSolverTestHarness() {
     return _jsonStringify({
         ok: true,
         tests: {
             splitFallbacks: _testSplitFallbacks(),
             freeRectMerging: _testFreeRectMerging(),
-            scoreOrdering: _testScoreOrdering()
+            scoreOrdering: _testScoreOrdering(),
+            canonicalRotation: _testCanonicalRotation()
         }
     });
 }
