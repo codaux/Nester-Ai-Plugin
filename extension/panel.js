@@ -29,6 +29,10 @@
     spacingIn: 0.25,
     optimizePreset: "Auto",
     searchEffort: "High",
+    solverWidthFillBias: 78,
+    solverOrderBias: 58,
+    solverHoleRepairBias: 72,
+    solverSearchDepth: 68,
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
     outputDate: today,
@@ -49,6 +53,10 @@
     "sheetWidthIn",
     "maxLengthIn",
     "spacingIn",
+    "solverWidthFillBias",
+    "solverOrderBias",
+    "solverHoleRepairBias",
+    "solverSearchDepth",
     "optimizePreset",
     "searchEffort",
     "allowItemRotationInBlock",
@@ -71,6 +79,28 @@
     outputPcCount: { min: 1, max: 9 },
     outputChokeCount: { min: 1, max: 8 },
     outputPartCount: { min: 0, max: 9 }
+  };
+  var TUNING_SLIDER_IDS = [
+    "solverWidthFillBias",
+    "solverOrderBias",
+    "solverHoleRepairBias",
+    "solverSearchDepth"
+  ];
+  var AUTO_NEST_FIELD_IDS = {
+    sheetWidthIn: true,
+    maxLengthIn: true,
+    spacingIn: true,
+    solverWidthFillBias: true,
+    solverOrderBias: true,
+    solverHoleRepairBias: true,
+    solverSearchDepth: true,
+    allowItemRotationInBlock: true,
+    allowBlockRotationOnSheet: true
+  };
+  var NAMING_RESETTABLE_IDS = {
+    outputPcCount: true,
+    outputChokeCount: true,
+    outputPartCount: true
   };
 
   var state = {
@@ -180,6 +210,14 @@
     if (parsed < minValue) return minValue;
     if (parsed > maxValue) return maxValue;
     return parsed;
+  }
+
+  function sanitizeSliderValue(value, fallback) {
+    var parsed = Number(value);
+    if (!isFinite(parsed)) return fallback;
+    if (parsed < 0) return 0;
+    if (parsed > 100) return 100;
+    return Math.round(parsed);
   }
 
   function findStepButton(node) {
@@ -337,8 +375,11 @@
       else if (id === "outputPcCount") el.value = String(sanitizeCountInRange(settings[id], 1, 9, DEFAULTS.outputPcCount));
       else if (id === "outputChokeCount") el.value = String(sanitizeCountInRange(settings[id], 1, 8, DEFAULTS.outputChokeCount));
       else if (id === "outputPartCount") el.value = String(sanitizeCountInRange(settings[id], 0, 9, DEFAULTS.outputPartCount));
+      else if (el.type === "range") el.value = String(sanitizeSliderValue(settings[id], DEFAULTS[id]));
       else el.value = String(settings[id]);
     }
+    updateAllSolverSliderValues();
+    updateNamingFieldVisualStates();
   }
 
   function syncOverridesFromInputs() {
@@ -365,6 +406,7 @@
       else if (id === "outputPcCount") settings[id] = sanitizeCountInRange(el.value, 1, 9, DEFAULTS.outputPcCount);
       else if (id === "outputChokeCount") settings[id] = sanitizeCountInRange(el.value, 1, 8, DEFAULTS.outputChokeCount);
       else if (id === "outputPartCount") settings[id] = sanitizeCountInRange(el.value, 0, 9, DEFAULTS.outputPartCount);
+      else if (el.type === "range") settings[id] = sanitizeSliderValue(el.value, DEFAULTS[id]);
       else if (el.type === "number") settings[id] = Number(el.value);
       else settings[id] = el.value;
     }
@@ -388,6 +430,53 @@
       id === "outputPcCount" ||
       id === "outputChokeCount" ||
       id === "outputPartCount";
+  }
+
+  function isAutoNestFieldId(id) {
+    return Boolean(id && AUTO_NEST_FIELD_IDS[id]);
+  }
+
+  function updateSolverSliderValue(id) {
+    var input = byId(id);
+    var output = byId(id + "Value");
+    var fallback = Object.prototype.hasOwnProperty.call(DEFAULTS, id) ? DEFAULTS[id] : 0;
+    var value;
+    if (!input || !output) return;
+    value = sanitizeSliderValue(input.value, fallback);
+    input.value = String(value);
+    output.value = String(value);
+    output.textContent = String(value);
+  }
+
+  function updateAllSolverSliderValues() {
+    for (var i = 0; i < TUNING_SLIDER_IDS.length; i++) updateSolverSliderValue(TUNING_SLIDER_IDS[i]);
+  }
+
+  function updateNamingFieldVisualState(id) {
+    var input = byId(id);
+    var wrapper;
+    var currentValue;
+    var defaultValue;
+    if (!input || !NAMING_RESETTABLE_IDS[id]) return;
+    wrapper = input.parentNode;
+    if (!wrapper || String(wrapper.className).indexOf("number-field") === -1) return;
+    currentValue = sanitizeCountInRange(input.value, Number(input.min || 0), Number(input.max || 100), DEFAULTS[id]);
+    defaultValue = DEFAULTS[id];
+    wrapper.classList.toggle("is-default", currentValue === defaultValue);
+    wrapper.classList.toggle("is-dirty", currentValue !== defaultValue);
+  }
+
+  function updateNamingFieldVisualStates() {
+    updateNamingFieldVisualState("outputPcCount");
+    updateNamingFieldVisualState("outputChokeCount");
+    updateNamingFieldVisualState("outputPartCount");
+  }
+
+  function resetNamingFieldToDefault(id) {
+    var input = byId(id);
+    if (!input || !Object.prototype.hasOwnProperty.call(DEFAULTS, id)) return;
+    input.value = String(DEFAULTS[id]);
+    input.dispatchEvent(createBubbledEvent("input"));
   }
 
   function buildOutputPrefixSegment(settings) {
@@ -1169,20 +1258,38 @@
       goToPlacedCopy(card.getAttribute("data-source-key"));
     });
 
-    function handleNamingFieldUpdate(evt) {
+    function handleFieldUiUpdate(evt) {
       var target = evt.target;
-      if (!target || !target.id || !isNamingFieldId(target.id)) return;
-      refreshOutputNameFromInputs();
-      writeStoredSettings(buildStoredState(getFormValues()));
+      if (!target || !target.id) return;
+
+      if (target.type === "range") updateSolverSliderValue(target.id);
+      if (NAMING_RESETTABLE_IDS[target.id]) updateNamingFieldVisualState(target.id);
+
+      if (isNamingFieldId(target.id)) {
+        refreshOutputNameFromInputs();
+        writeStoredSettings(buildStoredState(getFormValues()));
+        return;
+      }
+
+      if (isAutoNestFieldId(target.id)) {
+        writeStoredSettings(buildStoredState(getFormValues()));
+        scheduleAutoNest();
+      }
     }
 
     formEl.addEventListener("mousedown", function (evt) {
       if (findStepButton(evt.target)) evt.preventDefault();
     });
     formEl.addEventListener("click", function (evt) {
+      var resetTarget = evt.target && evt.target.getAttribute ? evt.target.getAttribute("data-default-target") : "";
       var button = findStepButton(evt.target);
       var direction;
       var input;
+      if (resetTarget) {
+        evt.preventDefault();
+        resetNamingFieldToDefault(resetTarget);
+        return;
+      }
       if (!button) return;
 
       direction = Number(button.getAttribute("data-step-dir"));
@@ -1193,8 +1300,8 @@
 
       stepNamingNumberField(input, direction);
     });
-    formEl.addEventListener("input", handleNamingFieldUpdate);
-    formEl.addEventListener("change", handleNamingFieldUpdate);
+    formEl.addEventListener("input", handleFieldUiUpdate);
+    formEl.addEventListener("change", handleFieldUiUpdate);
 
     if (orderEmailBtn) {
       orderEmailBtn.addEventListener("click", function () {

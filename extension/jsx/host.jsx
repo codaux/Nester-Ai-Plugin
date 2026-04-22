@@ -38,6 +38,10 @@ var DEFAULTS = {
     spacingIn: 0.25,
     optimizePreset: "Auto",
     searchEffort: "High",
+    solverWidthFillBias: 78,
+    solverOrderBias: 58,
+    solverHoleRepairBias: 72,
+    solverSearchDepth: 68,
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
     hideSourceLayersAfterBuild: true
@@ -917,7 +921,36 @@ function clonePersonalityTemplate(name) {
     return out;
 }
 
-function createPersonality(name, variantTag) {
+function blendPercent(base, target, influence) {
+    return clamp((base * (1 - influence)) + (target * influence), 0, 100);
+}
+
+function getSolverTuningValue(settings, key, fallback) {
+    return clamp(_numOr(settings && settings[key], fallback), 0, 100);
+}
+
+function applySolverTuningToPersonality(p, settings) {
+    if (!settings) return p;
+
+    var widthBias = getSolverTuningValue(settings, "solverWidthFillBias", DEFAULTS.solverWidthFillBias);
+    var orderBias = getSolverTuningValue(settings, "solverOrderBias", DEFAULTS.solverOrderBias);
+    var repairBias = getSolverTuningValue(settings, "solverHoleRepairBias", DEFAULTS.solverHoleRepairBias);
+    var stabilityBias = (orderBias * 0.55) + (repairBias * 0.45);
+
+    p.widthFillPriority = Math.round(blendPercent(p.widthFillPriority, widthBias, 0.72));
+    p.orderDiscipline = Math.round(blendPercent(p.orderDiscipline, orderBias, 0.72));
+    p.continuityWeight = Math.round(blendPercent(p.continuityWeight, orderBias, 0.68));
+    p.cavityWeight = Math.round(blendPercent(p.cavityWeight, repairBias, 0.74));
+    p.holeFillAggressiveness = Math.round(blendPercent(p.holeFillAggressiveness, repairBias, 0.82));
+    p.splitAggressiveness = Math.round(blendPercent(p.splitAggressiveness, repairBias, 0.62));
+    p.compactionAggressiveness = Math.round(blendPercent(p.compactionAggressiveness, repairBias, 0.6));
+    p.fragmentationWeight = Math.round(blendPercent(p.fragmentationWeight, stabilityBias, 0.66));
+    p.maxBlockAspectRatio = Math.max(2.1, p.maxBlockAspectRatio + ((widthBias - orderBias) * 0.011));
+    p.dominantShelfRows = clamp(Math.round(blendPercent(p.dominantShelfRows * 10, widthBias, 0.22) / 10), 3, 9);
+    return p;
+}
+
+function createPersonality(name, variantTag, settings) {
     var p = clonePersonalityTemplate(name);
     p.variantTag = variantTag || "base";
     p.strategyName = (variantTag && variantTag !== "base") ? (name + ":" + variantTag) : name;
@@ -936,38 +969,29 @@ function createPersonality(name, variantTag) {
         p.maxBlockAspectRatio = Math.max(2.2, p.maxBlockAspectRatio - 0.25);
     }
 
-    return p;
+    return applySolverTuningToPersonality(p, settings);
 }
 
-function getEffortConfig(searchEffort) {
-    if (searchEffort === "High") {
-        return {
-            name: "High",
-            plansPerSource: 4,
-            comboLimit: 7,
-            orderVariantLimit: 6,
-            compactionPasses: 2,
-            splitPasses: 2,
-            holeAttemptsPerHole: 4,
-            repairSweeps: 2,
-            holeScanLimit: 10,
-            primaryPlanLimit: 8,
-            futureFitCheckCount: 8
-        };
-    }
+function getEffortConfig(searchEffort, settings) {
+    var depth = getSolverTuningValue(settings, "solverSearchDepth", (searchEffort === "High" ? 68 : 40));
+    var factor = depth / 100.0;
+    var name = "Balanced";
+    if (depth < 34) name = "Quick";
+    else if (depth >= 76) name = "Deep";
 
     return {
-        name: "Normal",
-        plansPerSource: 2,
-        comboLimit: 3,
-        orderVariantLimit: 3,
-        compactionPasses: 1,
-        splitPasses: 1,
-        holeAttemptsPerHole: 2,
-        repairSweeps: 1,
-        holeScanLimit: 6,
-        primaryPlanLimit: 4,
-        futureFitCheckCount: 5
+        name: name,
+        depth: depth,
+        plansPerSource: 2 + Math.round(factor * 3),
+        comboLimit: 3 + Math.round(factor * 6),
+        orderVariantLimit: 2 + Math.round(factor * 5),
+        compactionPasses: 1 + (depth >= 56 ? 1 : 0) + (depth >= 88 ? 1 : 0),
+        splitPasses: 1 + (depth >= 64 ? 1 : 0) + (depth >= 90 ? 1 : 0),
+        holeAttemptsPerHole: 2 + Math.round(factor * 3),
+        repairSweeps: 1 + (depth >= 72 ? 1 : 0) + (depth >= 92 ? 1 : 0),
+        holeScanLimit: 4 + Math.round(factor * 8),
+        primaryPlanLimit: 3 + Math.round(factor * 7),
+        futureFitCheckCount: 4 + Math.round(factor * 6)
     };
 }
 
@@ -978,7 +1002,7 @@ function buildStrategyCandidates(settings) {
         strategies.push({
             presetName: presetName,
             personalityName: personalityName,
-            personality: createPersonality(personalityName, variantTag),
+            personality: createPersonality(personalityName, variantTag, settings),
             isBaseline: isBaseline === true
         });
     }
@@ -2886,7 +2910,7 @@ function buildDebugSummaryText(result) {
 function solveFromSources(sources, settings) {
     resetBlockUidCounter();
 
-    var effortConfig = getEffortConfig(settings.searchEffort);
+    var effortConfig = getEffortConfig(settings.searchEffort, settings);
     var strategies = buildStrategyCandidates(settings);
     var baselineResult = null;
     var smartCandidates = [];
@@ -3579,6 +3603,10 @@ function normalizeSettingsFromPanel(input) {
     s.spacingIn = Math.max(0, _numOr(input.spacingIn, s.spacingIn));
     s.optimizePreset = _oneOfOr(input.optimizePreset, ["Auto", "Compact", "Balanced", "Ordered"], s.optimizePreset);
     s.searchEffort = _oneOfOr(input.searchEffort, ["Normal", "High"], s.searchEffort);
+    s.solverWidthFillBias = clamp(_numOr(input.solverWidthFillBias, s.solverWidthFillBias), 0, 100);
+    s.solverOrderBias = clamp(_numOr(input.solverOrderBias, s.solverOrderBias), 0, 100);
+    s.solverHoleRepairBias = clamp(_numOr(input.solverHoleRepairBias, s.solverHoleRepairBias), 0, 100);
+    s.solverSearchDepth = clamp(_numOr(input.solverSearchDepth, s.solverSearchDepth), 0, 100);
     s.allowItemRotationInBlock = _boolOr(input.allowItemRotationInBlock, s.allowItemRotationInBlock);
     s.allowBlockRotationOnSheet = _boolOr(input.allowBlockRotationOnSheet, s.allowBlockRotationOnSheet);
     s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
@@ -3594,6 +3622,10 @@ function nesterGetDefaultSettings() {
         spacingIn: DEFAULTS.spacingIn,
         optimizePreset: DEFAULTS.optimizePreset,
         searchEffort: DEFAULTS.searchEffort,
+        solverWidthFillBias: DEFAULTS.solverWidthFillBias,
+        solverOrderBias: DEFAULTS.solverOrderBias,
+        solverHoleRepairBias: DEFAULTS.solverHoleRepairBias,
+        solverSearchDepth: DEFAULTS.solverSearchDepth,
         allowItemRotationInBlock: DEFAULTS.allowItemRotationInBlock,
         allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
         hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild

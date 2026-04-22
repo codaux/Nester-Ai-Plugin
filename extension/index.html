@@ -36,34 +36,50 @@
         </div>
       </section>
 
-      <section class="section">
-        <div class="grid settings-top-grid">
-          <label class="field">
-            <span>Layout Preset</span>
-            <select id="optimizePreset">
-              <option value="Auto">Auto (Recommended)</option>
-              <option value="Compact">Compact</option>
-              <option value="Balanced">Balanced</option>
-              <option value="Ordered">Ordered</option>
-            </select>
+      <section class="section tune-section">
+        <div class="section-head tune-head">
+          <span class="tune-title">Nest Tune</span>
+          <span class="tune-note">Quick human bias</span>
+        </div>
+        <div class="tune-grid">
+          <label class="slider-field">
+            <div class="slider-head">
+              <span>Fill Width</span>
+              <output id="solverWidthFillBiasValue" for="solverWidthFillBias">0</output>
+            </div>
+            <input id="solverWidthFillBias" class="solver-slider" type="range" min="0" max="100" step="1" />
           </label>
-          <label class="field">
-            <span>Solver Effort</span>
-            <select id="searchEffort">
-              <option value="Normal">Normal</option>
-              <option value="High">High</option>
-            </select>
+          <label class="slider-field">
+            <div class="slider-head">
+              <span>Keep Order</span>
+              <output id="solverOrderBiasValue" for="solverOrderBias">0</output>
+            </div>
+            <input id="solverOrderBias" class="solver-slider" type="range" min="0" max="100" step="1" />
           </label>
-          <div class="rotation-stack">
-            <label class="check check-grid">
-              <input id="allowItemRotationInBlock" type="checkbox" />
-              <span>↺ Item</span>
-            </label>
-            <label class="check check-grid">
-              <input id="allowBlockRotationOnSheet" type="checkbox" />
-              <span>↺ Block</span>
-            </label>
-          </div>
+          <label class="slider-field">
+            <div class="slider-head">
+              <span>Fix Holes</span>
+              <output id="solverHoleRepairBiasValue" for="solverHoleRepairBias">0</output>
+            </div>
+            <input id="solverHoleRepairBias" class="solver-slider" type="range" min="0" max="100" step="1" />
+          </label>
+          <label class="slider-field">
+            <div class="slider-head">
+              <span>Search Depth</span>
+              <output id="solverSearchDepthValue" for="solverSearchDepth">0</output>
+            </div>
+            <input id="solverSearchDepth" class="solver-slider" type="range" min="0" max="100" step="1" />
+          </label>
+        </div>
+        <div class="rotation-stack tune-rotation-stack">
+          <label class="check check-grid">
+            <input id="allowItemRotationInBlock" type="checkbox" />
+            <span>↺ Item</span>
+          </label>
+          <label class="check check-grid">
+            <input id="allowBlockRotationOnSheet" type="checkbox" />
+            <span>↺ Block</span>
+          </label>
         </div>
       </section>
 
@@ -90,7 +106,7 @@
             </label>
             <label class="field">
               <div class="number-field">
-                <span class="input-knit">Pcs</span>
+                <span class="input-knit is-resettable" data-default-target="outputPcCount">Pcs</span>
                 <input id="outputPcCount" class="number-field-input" type="number" min="1" max="9" step="1" inputmode="numeric" />
                 <div class="number-stepper">
                   <button class="number-stepper-btn" type="button" data-step-target="outputPcCount" data-step-dir="1" aria-label="Increase pcs"></button>
@@ -100,7 +116,7 @@
             </label>
             <label class="field">
               <div class="number-field">
-                <span class="input-knit">Choke</span>
+                <span class="input-knit is-resettable" data-default-target="outputChokeCount">Choke</span>
                 <input id="outputChokeCount" class="number-field-input" type="number" min="1" max="8" step="1" inputmode="numeric" />
                 <div class="number-stepper">
                   <button class="number-stepper-btn" type="button" data-step-target="outputChokeCount" data-step-dir="1" aria-label="Increase choke"></button>
@@ -110,7 +126,7 @@
             </label>
             <label class="field">
               <div class="number-field">
-                <span class="input-knit">Part</span>
+                <span class="input-knit is-resettable" data-default-target="outputPartCount">Part</span>
                 <input id="outputPartCount" class="number-field-input" type="number" min="0" max="9" step="1" inputmode="numeric" />
                 <div class="number-stepper">
                   <button class="number-stepper-btn" type="button" data-step-target="outputPartCount" data-step-dir="1" aria-label="Increase part"></button>
@@ -175,7 +191,7 @@
     </div>
     <div class="actions footer-actions">
       <h3>Made by REZA @ WeMust</h3>
-      <h3>version 0.3.3</h3>
+      <h3>version 0.4.0</h3>
     </div>
   </main>
 

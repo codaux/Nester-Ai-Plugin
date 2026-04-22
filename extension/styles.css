@@ -108,6 +108,95 @@ h2 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.tune-section {
+  text-align: left;
+}
+
+.tune-head {
+  margin-bottom: 8px;
+}
+
+.tune-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #d8e5f8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tune-note {
+  font-size: 10px;
+  color: #8094af;
+}
+
+.tune-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.slider-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 6px;
+  border: 1px solid #334258;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #141b28 0%, #111723 100%);
+}
+
+.slider-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.slider-head span {
+  font-size: 9px;
+  font-weight: 600;
+  color: #dbe8f7;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.slider-head output {
+  min-width: 28px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(108, 143, 186, 0.18);
+  color: #b7cae2;
+  font-size: 9px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.solver-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #8eb4e6;
+  cursor: ew-resize;
+}
+
+.rotation-stack.tune-rotation-stack {
+  display: grid;
+  margin-top: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 6px;
+}
+
+.rotation-stack.tune-rotation-stack .check-grid {
+  padding: 0;
+}
+
+.rotation-stack.tune-rotation-stack .check-grid span {
+  width: 100%;
+  min-height: 18px;
+  padding: 0 7px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -795,7 +884,9 @@ input.inventory-input {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   transition:
     border-color 120ms ease,
-    box-shadow 120ms ease;
+    box-shadow 120ms ease,
+    opacity 120ms ease,
+    background 120ms ease;
 }
 
 .number-field:focus-within {
@@ -816,6 +907,19 @@ input.inventory-input {
   padding: 1px 3px;
   border-right: 1px solid rgba(255, 255, 255, 0.12);
   white-space: nowrap;
+  transition:
+    color 120ms ease,
+    opacity 120ms ease,
+    background-color 120ms ease;
+}
+
+.number-field .input-knit.is-resettable {
+  cursor: pointer;
+}
+
+.number-field .input-knit.is-resettable:hover {
+  color: #dce8fb;
+  background: rgba(143, 177, 218, 0.08);
 }
 
 .number-field input,
@@ -848,6 +952,37 @@ input.inventory-input {
 .number-field input[type="number"],
 .number-field-input[type="number"] {
   -moz-appearance: textfield;
+}
+
+.number-field.is-default {
+  border-color: #2f394b;
+  background: linear-gradient(180deg, #10141f, #151d2b);
+}
+
+.number-field.is-default .input-knit {
+  color: #627793;
+  opacity: 0.68;
+}
+
+.number-field.is-default .number-field-input {
+  color: #94a4ba;
+}
+
+.number-field.is-dirty {
+  border-color: #6b88b4;
+  background: linear-gradient(180deg, #152033, #1b2740);
+  box-shadow:
+    0 0 0 1px rgba(112, 152, 214, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.number-field.is-dirty .input-knit {
+  color: #dfeaff;
+  opacity: 1;
+}
+
+.number-field.is-dirty .number-field-input {
+  color: #f4f8ff;
 }
 
 .number-stepper {
