@@ -457,6 +457,7 @@ select {
 
 .nest-action,
 .export-action {
+  position: relative;
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 28px;
@@ -464,6 +465,10 @@ select {
   align-items: stretch;
   overflow: hidden;
   border-radius: 14px;
+  isolation: isolate;
+  background-size: 140% 140%;
+  background-position: 0% 50%;
+  transition: filter 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
 .nest-action {
@@ -559,8 +564,11 @@ button {
 
 #btn-run,
 #btn-export {
+  position: relative;
+  isolation: isolate;
   padding-left: 15px;
   overflow: hidden;
+  font-size: 10px;
 }
 
 .nest-action > #btn-run,
@@ -588,6 +596,44 @@ button {
 .nest-action > #btn-run:active,
 .export-action > #btn-export:active {
   background: rgba(0, 0, 0, 0.05);
+}
+
+.nest-action.is-busy,
+.export-action.is-busy {
+  filter: saturate(1.08) brightness(1.04);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.09) inset,
+    0 7px 18px rgba(8, 12, 18, 0.2);
+  animation: action-busy-breathe 1.7s ease-in-out infinite;
+}
+
+#btn-run[aria-busy="true"],
+#btn-export[aria-busy="true"] {
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.18);
+}
+
+#btn-run[aria-busy="true"]::after,
+#btn-export[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 18%,
+    rgba(255, 255, 255, 0.06) 34%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(255, 255, 255, 0.08) 64%,
+    transparent 80%
+  );
+  transform: translateX(-130%);
+  pointer-events: none;
+  animation: action-busy-sheen 1.45s ease-in-out infinite;
+}
+
+#btn-run[aria-busy="true"]:disabled,
+#btn-export[aria-busy="true"]:disabled {
+  opacity: 1;
 }
 
 .icon-button {
@@ -635,6 +681,39 @@ button.secondary {
 button:disabled {
   opacity: 0.7;
   cursor: default;
+}
+
+@keyframes action-busy-breathe {
+  0%,
+  100% {
+    transform: translateY(0);
+    background-position: 0% 50%;
+  }
+
+  50% {
+    transform: translateY(-0.5px);
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes action-busy-sheen {
+  0% {
+    transform: translateX(-130%);
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 0.95;
+  }
+
+  72% {
+    opacity: 0.95;
+  }
+
+  100% {
+    transform: translateX(130%);
+    opacity: 0;
+  }
 }
 
 .inventory-meta {
@@ -1183,7 +1262,7 @@ input.inventory-input {
   border-radius: 12px;
   background: #141a24;
   color: #a9b8cb;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
   transition:
     background-color 120ms ease,

@@ -9,6 +9,8 @@
   var formEl = document.getElementById("settings-form");
   var runBtn = document.getElementById("btn-run");
   var exportBtn = document.getElementById("btn-export");
+  var runActionEl = runBtn ? runBtn.parentNode : null;
+  var exportActionEl = exportBtn ? exportBtn.parentNode : null;
   var exportFolderBtn = document.getElementById("btn-export-folder");
   var regenerateNameBtn = document.getElementById("btn-regenerate-name");
   var resetBtn = document.getElementById("btn-reset");
@@ -630,12 +632,16 @@
     var isExportBusy = mode === "export";
     var isBusy = isNestBusy || isExportBusy;
 
+    if (runActionEl) runActionEl.classList.toggle("is-busy", isNestBusy);
     runBtn.disabled = isBusy;
     runBtn.textContent = isNestBusy ? "NESTING..." : "NEST";
+    runBtn.setAttribute("aria-busy", isNestBusy ? "true" : "false");
 
     if (exportBtn) {
+      if (exportActionEl) exportActionEl.classList.toggle("is-busy", isExportBusy);
       exportBtn.disabled = isBusy || !getResultNameText();
       exportBtn.textContent = isExportBusy ? "Exporting..." : "EXPORT";
+      exportBtn.setAttribute("aria-busy", isExportBusy ? "true" : "false");
     }
     if (exportFolderBtn) exportFolderBtn.disabled = isBusy;
     if (orderEmailBtn) orderEmailBtn.disabled = isBusy;

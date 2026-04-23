@@ -420,6 +420,14 @@ function cloneArray(list) {
     return out;
 }
 
+function arrayHasItem(list, item) {
+    if (!list || !list.length) return false;
+    for (var i = 0; i < list.length; i++) {
+        if (list[i] === item) return true;
+    }
+    return false;
+}
+
 function cloneSettings(settings) {
     var out = {};
     for (var key in settings) {
@@ -618,6 +626,74 @@ function estimatePlanShelfPenalty(layouts, settings, isDominant) {
         fullWidthTemplateCount: fullWidthTemplateCount,
         penalty: underfilledPenalty
     };
+}
+
+function estimatePlanGutterFlex(layouts, settings, isDominant) {
+    if (isDominant) return 0;
+
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var total = 0;
+
+    for (var i = 0; i < layouts.length; i++) {
+        var template = layouts[i];
+        if (!template || template.count > 10) continue;
+
+        var widthRatio = template.blockW / Math.max(sheetWidth, EPS);
+        var tallness = template.blockH / Math.max(template.blockW, EPS);
+        if (widthRatio > 0.28 || tallness < 1.25) continue;
+
+        total += (tallness - 1.1) * (0.42 + ((1 - widthRatio) * 0.78));
+        if (template.planKind === "narrow") total += 0.6;
+    }
+
+    return total;
+}
+
+function scoreSourcePlanLayouts(layouts, settings, personality, isDominant) {
+    var widthBias = personality.widthFillPriority / 100.0;
+    var continuityBias = personality.continuityWeight / 100.0;
+    var totalArea = 0;
+    var totalEmpty = 0;
+    var totalAspect = 0;
+    var totalWidthFill = 0;
+    var maxHeight = 0;
+
+    for (var i = 0; i < layouts.length; i++) {
+        var template = layouts[i];
+        totalArea += template.area;
+        totalEmpty += template.emptyCells;
+        totalAspect += Math.max(0, template.ratio - personality.maxBlockAspectRatio);
+        totalWidthFill += template.widthFill;
+        if (template.blockH > maxHeight) maxHeight = template.blockH;
+    }
+
+    var shelfProfile = estimatePlanShelfPenalty(layouts, settings, isDominant);
+    var gutterFlexScore = estimatePlanGutterFlex(layouts, settings, isDominant);
+    var planScore =
+        (layouts.length * (1850 + (continuityBias * 950))) +
+        (totalEmpty * 1650) +
+        (totalAspect * totalAspect * 14000) +
+        (maxHeight * 2.2) +
+        ((1 - (totalWidthFill / Math.max(layouts.length, 1))) * 26000 * (0.6 + (widthBias * 0.4))) +
+        (shelfProfile.penalty * (5200 + (continuityBias * 2400))) +
+        (totalArea * 0.00001) -
+        (gutterFlexScore * 3200);
+
+    return {
+        planScore: planScore,
+        shelfPenalty: shelfProfile.penalty,
+        gutterFlexScore: gutterFlexScore
+    };
+}
+
+function estimatePlanStackedLength(layouts, settings) {
+    var spacing = inToPt(settings.spacingIn);
+    var total = 0;
+
+    for (var i = 0; i < layouts.length; i++) total += layouts[i].blockH;
+    if (layouts.length > 1) total += spacing * (layouts.length - 1);
+
+    return total;
 }
 
 // =====================================================
@@ -1133,6 +1209,34 @@ function instantiateBlockFromTemplate(template) {
     return out;
 }
 
+function getTemplateShapeKey(template) {
+    if (!template) return "";
+    if (template.mixedLayout) {
+        return [
+            template.sourceId,
+            template.count,
+            "mix",
+            Math.round(template.blockW),
+            Math.round(template.blockH)
+        ].join(":");
+    }
+    return [
+        template.sourceId,
+        template.count,
+        template.cols,
+        template.rows,
+        template.rotatedInside ? 1 : 0
+    ].join(":");
+}
+
+function pushUniqueTemplateOption(out, template, seen) {
+    if (!template) return;
+    var key = getTemplateShapeKey(template);
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(template);
+}
+
 function balancedPartition(qty, parts) {
     var arr = [];
     var base = Math.floor(qty / parts);
@@ -1189,6 +1293,163 @@ function countDistinctPlacementCoords(placements, axis) {
     return coords.length;
 }
 
+function getMixedBeamSearchConfig(settings, count) {
+    var depthBias = getSolverTuningValue(settings, "solverSearchDepth", DEFAULTS.solverSearchDepth) / 100.0;
+    var beamWidth = 4 + Math.round(depthBias * 4);
+    var optionLimit = 2 + Math.round(depthBias * 2);
+
+    if (count >= 48) {
+        beamWidth = Math.max(4, beamWidth - 1);
+        optionLimit = Math.max(2, optionLimit - 1);
+    }
+    if (count >= 72) beamWidth = Math.max(3, beamWidth - 1);
+
+    return {
+        beamWidth: beamWidth,
+        optionLimit: optionLimit
+    };
+}
+
+function getLegacyPiecePlacementOptions(piece, freeRects, settings, allowRotation, currentUsedLength, limit) {
+    var out = [];
+    var normal = getLegacyPaddedDims(piece, false, settings);
+    var rotated = allowRotation ? getLegacyPaddedDims(piece, true, settings) : null;
+
+    for (var i = 0; i < freeRects.length; i++) {
+        var fr = freeRects[i];
+
+        if (normal.w <= fr.w + EPS && normal.h <= fr.h + EPS) {
+            out.push({
+                x: fr.x,
+                y: fr.y,
+                w: normal.w,
+                h: normal.h,
+                artW: normal.artW,
+                artH: normal.artH,
+                rotatedInside: false,
+                score: legacyScorePlacement(fr, normal.w, normal.h, currentUsedLength)
+            });
+        }
+
+        if (rotated && rotated.w <= fr.w + EPS && rotated.h <= fr.h + EPS) {
+            out.push({
+                x: fr.x,
+                y: fr.y,
+                w: rotated.w,
+                h: rotated.h,
+                artW: rotated.artW,
+                artH: rotated.artH,
+                rotatedInside: true,
+                score: legacyScorePlacement(fr, rotated.w, rotated.h, currentUsedLength)
+            });
+        }
+    }
+
+    out.sort(function(a, b) {
+        if (a.score.projectedUsedLength !== b.score.projectedUsedLength) return a.score.projectedUsedLength - b.score.projectedUsedLength;
+        if (a.score.shortFit !== b.score.shortFit) return a.score.shortFit - b.score.shortFit;
+        if (a.score.areaFit !== b.score.areaFit) return a.score.areaFit - b.score.areaFit;
+        if (a.score.longFit !== b.score.longFit) return a.score.longFit - b.score.longFit;
+        if (a.x !== b.x) return a.x - b.x;
+        if (a.y !== b.y) return a.y - b.y;
+        if (a.rotatedInside !== b.rotatedInside) return a.rotatedInside ? 1 : -1;
+        return 0;
+    });
+
+    var unique = [];
+    var seen = {};
+    var maxItems = Math.max(1, limit || 1);
+
+    for (i = 0; i < out.length; i++) {
+        var placement = out[i];
+        var key = [
+            Math.round(placement.x),
+            Math.round(placement.y),
+            Math.round(placement.w),
+            Math.round(placement.h),
+            placement.rotatedInside ? 1 : 0
+        ].join(":");
+        if (seen[key]) continue;
+        seen[key] = true;
+        unique.push(placement);
+        if (unique.length >= maxItems) break;
+    }
+
+    return unique;
+}
+
+function computeMixedLayoutScore(blockW, blockH, rotatedCount, normalCount, count, settings, personality, favorWide) {
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var ratio = longSide(blockW, blockH) / Math.max(shortSide(blockW, blockH), EPS);
+    var widthFill = blockW / Math.max(sheetWidth, EPS);
+    var aspectPenalty = Math.max(0, ratio - personality.maxBlockAspectRatio);
+    var widthBias = personality.widthFillPriority / 100.0;
+    var continuityBias = personality.continuityWeight / 100.0;
+    var imbalanceOverflow = Math.max(0, Math.abs(rotatedCount - normalCount) - (count * 0.72));
+    var heightPenalty = blockH * (2.8 + ((1 - widthBias) * 1.8));
+    var mixedPenalty = 210 + (count * 13) + (favorWide ? 90 : 0);
+
+    return {
+        ratio: ratio,
+        widthFill: widthFill,
+        score:
+            (aspectPenalty * aspectPenalty * 17000) +
+            ((1 - widthFill) * 18500 * (0.42 + (widthBias * 0.58))) +
+            heightPenalty +
+            (ratio * 320) +
+            (imbalanceOverflow * (14 + (continuityBias * 10))) +
+            mixedPenalty
+    };
+}
+
+function buildMixedLayoutFromState(state, count, settings, personality, favorWide) {
+    if (!state || state.rotatedCount === 0 || state.normalCount === 0) return null;
+
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var maxLength = inToPt(settings.maxLengthIn);
+    if (state.maxRight > sheetWidth + EPS || state.maxBottom > maxLength + EPS) return null;
+
+    var metrics = computeMixedLayoutScore(
+        state.maxRight,
+        state.maxBottom,
+        state.rotatedCount,
+        state.normalCount,
+        count,
+        settings,
+        personality,
+        favorWide
+    );
+
+    return {
+        count: count,
+        cols: countDistinctPlacementCoords(state.placements, "x"),
+        rows: countDistinctPlacementCoords(state.placements, "y"),
+        blockW: state.maxRight,
+        blockH: state.maxBottom,
+        ratio: metrics.ratio,
+        widthFill: metrics.widthFill,
+        score: metrics.score,
+        mixedLayout: true,
+        piecePlacements: cloneArray(state.placements)
+    };
+}
+
+function scoreMixedBeamState(state, count, settings, personality, favorWide) {
+    if (!state) return Infinity;
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var widthBias = personality.widthFillPriority / 100.0;
+    var widthFill = Math.max(state.maxRight, EPS) / Math.max(sheetWidth, EPS);
+    var monoPenalty = (state.rotatedCount === 0 || state.normalCount === 0) ? 2000 : 0;
+    var imbalanceOverflow = Math.max(0, Math.abs(state.rotatedCount - state.normalCount) - (count * 0.84));
+
+    return (
+        state.maxBottom +
+        ((1 - widthFill) * (260 + (widthBias * 220))) +
+        monoPenalty +
+        (imbalanceOverflow * 8)
+    );
+}
+
 function shouldConsiderMixedOrientationTemplates(src, settings, count) {
     if (!settings || settings.allowItemRotationInBlock === false) return false;
     if (!src || count <= 2) return false;
@@ -1221,74 +1482,125 @@ function chooseBestMixedLayoutForCount(src, count, settings, personality, favorW
         longSide: src.longSide,
         shortSide: src.shortSide
     };
-    var freeRects = [{
-        x: 0,
-        y: 0,
-        w: getPackingSheetWidth(settings),
-        h: getPackingMaxLength(settings)
-    }];
-    var usedLength = 0;
-    var placements = [];
-    var maxRight = 0;
-    var maxBottom = 0;
-    var rotatedCount = 0;
-    var normalCount = 0;
+    var initialState = {
+        freeRects: [{
+            x: 0,
+            y: 0,
+            w: getPackingSheetWidth(settings),
+            h: getPackingMaxLength(settings)
+        }],
+        usedLength: 0,
+        placements: [],
+        maxRight: 0,
+        maxBottom: 0,
+        rotatedCount: 0,
+        normalCount: 0
+    };
+    var greedyState = initialState;
+    var greedyLayout = null;
+    var bestLayout = null;
+    var search = getMixedBeamSearchConfig(settings, count);
+    var states = [initialState];
 
     for (var i = 0; i < count; i++) {
-        var placement = findBestLegacyPiecePlacement(piece, freeRects, settings, true, usedLength);
-        if (!placement) return null;
+        var greedyPlacement = findBestLegacyPiecePlacement(piece, greedyState.freeRects, settings, true, greedyState.usedLength);
+        if (greedyPlacement) {
+            greedyState = {
+                freeRects: placeAndUpdateFreeRects(greedyState.freeRects, greedyPlacement),
+                usedLength: Math.max(greedyState.usedLength, greedyPlacement.y + greedyPlacement.h),
+                placements: greedyState.placements.concat([{
+                    x: greedyPlacement.x,
+                    y: greedyPlacement.y,
+                    w: greedyPlacement.artW,
+                    h: greedyPlacement.artH,
+                    rotatedInside: greedyPlacement.rotatedInside === true
+                }]),
+                maxRight: Math.max(greedyState.maxRight, greedyPlacement.x + greedyPlacement.artW),
+                maxBottom: Math.max(greedyState.maxBottom, greedyPlacement.y + greedyPlacement.artH),
+                rotatedCount: greedyState.rotatedCount + (greedyPlacement.rotatedInside ? 1 : 0),
+                normalCount: greedyState.normalCount + (greedyPlacement.rotatedInside ? 0 : 1)
+            };
+            if (i === count - 1) greedyLayout = buildMixedLayoutFromState(greedyState, count, settings, personality, favorWide);
+        }
 
-        placements.push({
-            x: placement.x,
-            y: placement.y,
-            w: placement.artW,
-            h: placement.artH,
-            rotatedInside: placement.rotatedInside === true
+        var nextStates = [];
+        for (var s = 0; s < states.length; s++) {
+            var options = getLegacyPiecePlacementOptions(
+                piece,
+                states[s].freeRects,
+                settings,
+                true,
+                states[s].usedLength,
+                search.optionLimit
+            );
+
+            for (var o = 0; o < options.length; o++) {
+                var placement = options[o];
+                nextStates.push({
+                    freeRects: placeAndUpdateFreeRects(states[s].freeRects, placement),
+                    usedLength: Math.max(states[s].usedLength, placement.y + placement.h),
+                    placements: states[s].placements.concat([{
+                        x: placement.x,
+                        y: placement.y,
+                        w: placement.artW,
+                        h: placement.artH,
+                        rotatedInside: placement.rotatedInside === true
+                    }]),
+                    maxRight: Math.max(states[s].maxRight, placement.x + placement.artW),
+                    maxBottom: Math.max(states[s].maxBottom, placement.y + placement.artH),
+                    rotatedCount: states[s].rotatedCount + (placement.rotatedInside ? 1 : 0),
+                    normalCount: states[s].normalCount + (placement.rotatedInside ? 0 : 1)
+                });
+            }
+        }
+
+        if (!nextStates.length) break;
+
+        nextStates.sort(function(a, b) {
+            var scoreA = scoreMixedBeamState(a, count, settings, personality, favorWide);
+            var scoreB = scoreMixedBeamState(b, count, settings, personality, favorWide);
+            if (scoreA !== scoreB) return scoreA - scoreB;
+            if (a.maxBottom !== b.maxBottom) return a.maxBottom - b.maxBottom;
+            return a.maxRight - b.maxRight;
         });
 
-        if (placement.rotatedInside) rotatedCount += 1;
-        else normalCount += 1;
-
-        freeRects = placeAndUpdateFreeRects(freeRects, placement);
-        if (placement.x + placement.artW > maxRight) maxRight = placement.x + placement.artW;
-        if (placement.y + placement.artH > maxBottom) maxBottom = placement.y + placement.artH;
-        if (placement.y + placement.h > usedLength) usedLength = placement.y + placement.h;
+        var pruned = [];
+        var seen = {};
+        for (s = 0; s < nextStates.length; s++) {
+            var state = nextStates[s];
+            var key = [
+                Math.round(state.maxRight),
+                Math.round(state.maxBottom),
+                state.rotatedCount,
+                state.normalCount
+            ].join(":");
+            if (seen[key]) continue;
+            seen[key] = true;
+            pruned.push(state);
+            if (pruned.length >= search.beamWidth) break;
+        }
+        states = pruned;
     }
 
-    if (rotatedCount === 0 || normalCount === 0) return null;
+    for (i = 0; i < states.length; i++) {
+        var candidate = buildMixedLayoutFromState(states[i], count, settings, personality, favorWide);
+        if (!candidate) continue;
+        if (!bestLayout ||
+            candidate.blockH < bestLayout.blockH - EPS ||
+            (Math.abs(candidate.blockH - bestLayout.blockH) <= EPS && candidate.score < bestLayout.score) ||
+            (Math.abs(candidate.blockH - bestLayout.blockH) <= EPS && candidate.score === bestLayout.score && candidate.widthFill > bestLayout.widthFill + 1e-6)) {
+            bestLayout = candidate;
+        }
+    }
 
-    var sheetWidth = inToPt(settings.sheetWidthIn);
-    var maxLength = inToPt(settings.maxLengthIn);
-    if (maxRight > sheetWidth + EPS || maxBottom > maxLength + EPS) return null;
+    if (greedyLayout && (!bestLayout ||
+        greedyLayout.blockH < bestLayout.blockH - EPS ||
+        (Math.abs(greedyLayout.blockH - bestLayout.blockH) <= EPS && greedyLayout.score < bestLayout.score) ||
+        (Math.abs(greedyLayout.blockH - bestLayout.blockH) <= EPS && greedyLayout.score === bestLayout.score && greedyLayout.widthFill > bestLayout.widthFill + 1e-6))) {
+        bestLayout = greedyLayout;
+    }
 
-    var ratio = longSide(maxRight, maxBottom) / Math.max(shortSide(maxRight, maxBottom), EPS);
-    var widthFill = maxRight / Math.max(sheetWidth, EPS);
-    var heightFill = maxBottom / Math.max(maxLength, EPS);
-    var aspectPenalty = Math.max(0, ratio - personality.maxBlockAspectRatio);
-    var widthBias = personality.widthFillPriority / 100.0;
-    var continuityBias = personality.continuityWeight / 100.0;
-    var mixedPenalty = 260 + (count * 18) + (favorWide ? 120 : 0);
-
-    var score =
-        (aspectPenalty * aspectPenalty * 19000) +
-        ((1 - widthFill) * 25000 * (0.55 + (widthBias * 0.45))) +
-        (heightFill * 3000) +
-        (ratio * 360) +
-        (Math.abs(rotatedCount - normalCount) * (28 + (continuityBias * 16))) +
-        mixedPenalty;
-
-    return {
-        count: count,
-        cols: countDistinctPlacementCoords(placements, "x"),
-        rows: countDistinctPlacementCoords(placements, "y"),
-        blockW: maxRight,
-        blockH: maxBottom,
-        ratio: ratio,
-        widthFill: widthFill,
-        score: score,
-        mixedLayout: true,
-        piecePlacements: placements
-    };
+    return bestLayout;
 }
 
 function shouldPreferMixedTemplate(gridTemplate, mixedTemplate) {
@@ -1300,32 +1612,13 @@ function shouldPreferMixedTemplate(gridTemplate, mixedTemplate) {
     return false;
 }
 
-function getBestTemplateForCountFromCache(sourceCache, count, settings, personality) {
-    if (!sourceCache) return null;
-
-    var gridTemplate = sourceCache.bestBlockByCount[count] || null;
-    var mixedTemplate = null;
-
-    if (shouldConsiderMixedOrientationTemplates(sourceCache.source, settings, count)) {
-        if (!sourceCache.mixedBlockByCount) sourceCache.mixedBlockByCount = {};
-        if (!Object.prototype.hasOwnProperty.call(sourceCache.mixedBlockByCount, count)) {
-            var mixed = chooseBestMixedLayoutForCount(sourceCache.source, count, settings, personality, sourceCache.isDominant);
-            sourceCache.mixedBlockByCount[count] = mixed ? createBlockTemplateFromMixedLayout(sourceCache.source, mixed, "mixed", 0) : null;
-        }
-        mixedTemplate = sourceCache.mixedBlockByCount[count];
-    }
-
-    return shouldPreferMixedTemplate(gridTemplate, mixedTemplate) ? mixedTemplate : gridTemplate;
-}
-
-function chooseBestGridForCount(src, count, settings, personality, favorWide) {
+function buildGridCandidatesForCount(src, count, settings, personality, favorWide) {
     var sheetWidth = inToPt(settings.sheetWidthIn);
     var maxLength = inToPt(settings.maxLengthIn);
     var spacing = inToPt(settings.spacingIn);
     var maxAspect = personality.maxBlockAspectRatio;
     var widthBias = personality.widthFillPriority / 100.0;
     var continuityBias = personality.continuityWeight / 100.0;
-
     var candidates = [];
     var orientations = buildItemOrientationOptions(src, settings);
 
@@ -1375,12 +1668,11 @@ function chooseBestGridForCount(src, count, settings, personality, favorWide) {
                 blockH: blockH,
                 ratio: ratio,
                 widthFill: widthFill,
+                heightFill: heightFill,
                 score: score
             });
         }
     }
-
-    if (candidates.length === 0) return null;
 
     candidates.sort(function(a, b) {
         if (a.score !== b.score) return a.score - b.score;
@@ -1389,7 +1681,95 @@ function chooseBestGridForCount(src, count, settings, personality, favorWide) {
         return (a.blockW * a.blockH) - (b.blockW * b.blockH);
     });
 
-    return candidates[0];
+    return candidates;
+}
+
+function chooseTemplateVariantByProfile(candidates, profile) {
+    if (!candidates || !candidates.length) return null;
+
+    var ranked = cloneArray(candidates);
+    if (profile === "narrow") {
+        ranked.sort(function(a, b) {
+            if (a.blockW !== b.blockW) return a.blockW - b.blockW;
+            if (b.blockH !== a.blockH) return b.blockH - a.blockH;
+            if (a.emptyCells !== b.emptyCells) return a.emptyCells - b.emptyCells;
+            return a.score - b.score;
+        });
+    } else if (profile === "short") {
+        ranked.sort(function(a, b) {
+            if (a.blockH !== b.blockH) return a.blockH - b.blockH;
+            if (b.widthFill !== a.widthFill) return b.widthFill - a.widthFill;
+            if (a.emptyCells !== b.emptyCells) return a.emptyCells - b.emptyCells;
+            return a.score - b.score;
+        });
+    }
+
+    return ranked[0] || null;
+}
+
+function buildTemplateOptionsForCount(sourceCache, count, settings, personality) {
+    if (!sourceCache) return [];
+
+    var src = sourceCache.source;
+    var candidates = buildGridCandidatesForCount(src, count, settings, personality, sourceCache.isDominant);
+    var options = [];
+    var seen = {};
+    var primaryTemplate = null;
+    var mixedTemplate = null;
+
+    if (candidates.length) {
+        primaryTemplate = createBlockTemplateFromGrid(src, candidates[0], count === 1 ? "piece" : "count", 0);
+        sourceCache.bestBlockByCount[count] = primaryTemplate;
+    } else {
+        sourceCache.bestBlockByCount[count] = null;
+    }
+
+    if (shouldConsiderMixedOrientationTemplates(src, settings, count)) {
+        if (!sourceCache.mixedBlockByCount) sourceCache.mixedBlockByCount = {};
+        if (!Object.prototype.hasOwnProperty.call(sourceCache.mixedBlockByCount, count)) {
+            var mixed = chooseBestMixedLayoutForCount(src, count, settings, personality, sourceCache.isDominant);
+            sourceCache.mixedBlockByCount[count] = mixed ? createBlockTemplateFromMixedLayout(src, mixed, "mixed", 0) : null;
+        }
+        mixedTemplate = sourceCache.mixedBlockByCount[count];
+    }
+
+    if (shouldPreferMixedTemplate(primaryTemplate, mixedTemplate)) {
+        pushUniqueTemplateOption(options, mixedTemplate, seen);
+        pushUniqueTemplateOption(options, primaryTemplate, seen);
+    } else {
+        pushUniqueTemplateOption(options, primaryTemplate, seen);
+        pushUniqueTemplateOption(options, mixedTemplate, seen);
+    }
+
+    if (count > 1 && candidates.length) {
+        var narrow = chooseTemplateVariantByProfile(candidates, "narrow");
+        var shortVariant = chooseTemplateVariantByProfile(candidates, "short");
+        if (narrow) pushUniqueTemplateOption(options, createBlockTemplateFromGrid(src, narrow, "narrow", 0), seen);
+        if (shortVariant) pushUniqueTemplateOption(options, createBlockTemplateFromGrid(src, shortVariant, "short", 0), seen);
+    }
+
+    return options;
+}
+
+function getTemplateOptionsForCountFromCache(sourceCache, count, settings, personality) {
+    if (!sourceCache) return [];
+    if (!sourceCache.templateOptionsByCount) sourceCache.templateOptionsByCount = {};
+
+    if (!Object.prototype.hasOwnProperty.call(sourceCache.templateOptionsByCount, count)) {
+        sourceCache.templateOptionsByCount[count] = buildTemplateOptionsForCount(sourceCache, count, settings, personality);
+    }
+
+    return sourceCache.templateOptionsByCount[count] || [];
+}
+
+function getBestTemplateForCountFromCache(sourceCache, count, settings, personality) {
+    var options = getTemplateOptionsForCountFromCache(sourceCache, count, settings, personality);
+    return options.length ? options[0] : null;
+}
+
+function chooseBestGridForCount(src, count, settings, personality, favorWide) {
+    var candidates = buildGridCandidatesForCount(src, count, settings, personality, favorWide);
+    return candidates.length ? candidates[0] : null;
 }
 
 function chooseBestGridForCountInRect(src, count, settings, personality, maxWidth, maxHeight) {
@@ -1475,7 +1855,8 @@ function buildSourcePlanCacheForSource(src, settings, personality, isDominant) {
         source: src,
         isDominant: isDominant,
         bestBlockByCount: countCache,
-        mixedBlockByCount: {}
+        mixedBlockByCount: {},
+        templateOptionsByCount: {}
     };
 }
 
@@ -1487,74 +1868,106 @@ function buildSourcePlanCandidates(src, sourceCache, settings, personality, effo
     var shelfPartitions = buildShelfAlignedPartitions(src, settings, maxBlocks);
     var plans = [];
     var seen = {};
-    var widthBias = personality.widthFillPriority / 100.0;
-    var continuityBias = personality.continuityWeight / 100.0;
+    var templateBeamLimit = Math.max(4, effortConfig.plansPerSource * 3);
 
     for (var sp = 0; sp < shelfPartitions.length; sp++) uniquePushPartition(partitions, shelfPartitions[sp]);
 
     for (var p = 0; p < partitions.length; p++) {
         var part = partitions[p];
-        var layouts = [];
         var failed = false;
-        var shapeKeyParts = [];
-        var totalArea = 0;
-        var totalEmpty = 0;
-        var totalAspect = 0;
-        var totalWidthFill = 0;
-        var maxHeight = 0;
+        var combos = [{ templates: [] }];
 
         for (var i = 0; i < part.length; i++) {
-            var template = getBestTemplateForCountFromCache(sourceCache, part[i], settings, personality);
-            if (!template) {
+            var templateOptions = getTemplateOptionsForCountFromCache(sourceCache, part[i], settings, personality);
+            if (!templateOptions.length) {
                 failed = true;
                 break;
             }
 
-            layouts.push(template);
-            shapeKeyParts.push(
-                template.mixedLayout
-                    ? [template.count, "mix", Math.round(template.blockW), Math.round(template.blockH)].join(":")
-                    : [template.count, template.cols, template.rows, template.rotatedInside ? 1 : 0].join(":")
-            );
-            totalArea += template.area;
-            totalEmpty += template.emptyCells;
-            totalAspect += Math.max(0, template.ratio - personality.maxBlockAspectRatio);
-            totalWidthFill += template.widthFill;
-            if (template.blockH > maxHeight) maxHeight = template.blockH;
+            if (templateOptions.length > 3) templateOptions = templateOptions.slice(0, 3);
+
+            var nextCombos = [];
+            for (var c = 0; c < combos.length; c++) {
+                for (var t = 0; t < templateOptions.length; t++) {
+                    var templates = combos[c].templates.concat([templateOptions[t]]);
+                    var metrics = scoreSourcePlanLayouts(templates, settings, personality, sourceCache.isDominant);
+                    nextCombos.push({
+                        templates: templates,
+                        heuristicScore: metrics.planScore,
+                        gutterFlexScore: metrics.gutterFlexScore
+                    });
+                }
+            }
+
+            nextCombos.sort(function(a, b) {
+                if (a.heuristicScore !== b.heuristicScore) return a.heuristicScore - b.heuristicScore;
+                return b.gutterFlexScore - a.gutterFlexScore;
+            });
+
+            if (nextCombos.length > templateBeamLimit) nextCombos = nextCombos.slice(0, templateBeamLimit);
+            combos = nextCombos;
         }
 
         if (failed) continue;
 
-        var planKey = shapeKeyParts.join("|");
-        if (seen[planKey]) continue;
-        seen[planKey] = true;
+        for (var comboIndex = 0; comboIndex < combos.length; comboIndex++) {
+            var layouts = combos[comboIndex].templates;
+            var shapeKeyParts = [];
 
-        var shelfProfile = estimatePlanShelfPenalty(layouts, settings, sourceCache.isDominant);
-        var planScore =
-            (layouts.length * (1850 + (continuityBias * 950))) +
-            (totalEmpty * 1650) +
-            (totalAspect * totalAspect * 14000) +
-            (maxHeight * 2.2) +
-            ((1 - (totalWidthFill / Math.max(layouts.length, 1))) * 26000 * (0.6 + (widthBias * 0.4))) +
-            (shelfProfile.penalty * (5200 + (continuityBias * 2400))) +
-            (totalArea * 0.00001);
+            for (i = 0; i < layouts.length; i++) {
+                var template = layouts[i];
+                shapeKeyParts.push(getTemplateShapeKey(template));
+            }
 
-        plans.push({
-            source: src,
-            planScore: planScore,
-            partition: cloneArray(part),
-            templates: cloneArray(layouts),
-            isDominant: sourceCache.isDominant,
-            shelfPenalty: shelfProfile.penalty
-        });
+            var planKey = shapeKeyParts.join("|");
+            if (seen[planKey]) continue;
+            seen[planKey] = true;
+
+            var planMetrics = scoreSourcePlanLayouts(layouts, settings, personality, sourceCache.isDominant);
+            plans.push({
+                source: src,
+                planScore: planMetrics.planScore,
+                partition: cloneArray(part),
+                templates: cloneArray(layouts),
+                isDominant: sourceCache.isDominant,
+                shelfPenalty: planMetrics.shelfPenalty,
+                gutterFlexScore: planMetrics.gutterFlexScore
+            });
+        }
     }
 
     plans.sort(function(a, b) {
         if (a.planScore !== b.planScore) return a.planScore - b.planScore;
+        if (b.gutterFlexScore !== a.gutterFlexScore) return b.gutterFlexScore - a.gutterFlexScore;
         return a.templates.length - b.templates.length;
     });
 
-    return plans.slice(0, effortConfig.plansPerSource);
+    var selected = [];
+    if (plans.length > 0) selected.push(plans[0]);
+
+    var shortestPlan = null;
+    var shortestLength = Infinity;
+    for (var shortestIndex = 0; shortestIndex < plans.length; shortestIndex++) {
+        var estimatedLength = estimatePlanStackedLength(plans[shortestIndex].templates, settings);
+        if (estimatedLength < shortestLength - EPS) {
+            shortestLength = estimatedLength;
+            shortestPlan = plans[shortestIndex];
+        }
+    }
+    if (shortestPlan && !arrayHasItem(selected, shortestPlan) && selected.length < effortConfig.plansPerSource) selected.push(shortestPlan);
+
+    for (var planIndex = 1; planIndex < plans.length && selected.length < effortConfig.plansPerSource; planIndex++) {
+        if (arrayHasItem(selected, plans[planIndex])) continue;
+        if (plans[planIndex].gutterFlexScore <= 0) continue;
+        selected.push(plans[planIndex]);
+    }
+
+    for (planIndex = 1; planIndex < plans.length && selected.length < effortConfig.plansPerSource; planIndex++) {
+        if (arrayHasItem(selected, plans[planIndex])) continue;
+        selected.push(plans[planIndex]);
+    }
+
+    return selected;
 }
 
 function generateSourceBlockPlans(sources, personality, effortConfig, settings, debugRoot) {
@@ -1610,7 +2023,7 @@ function buildGlobalCandidatePlanSets(sourcePlanData, personality, effortConfig,
     var planSets = sourcePlanData.sourcePlanSets;
     if (!planSets || planSets.length === 0) return [];
 
-    var beam = [{ plans: [], heuristicScore: 0, totalBlockCount: 0 }];
+    var beam = [{ plans: [], heuristicScore: 0, totalBlockCount: 0, gutterFlexScore: 0 }];
 
     for (var i = 0; i < planSets.length; i++) {
         var next = [];
@@ -1621,17 +2034,47 @@ function buildGlobalCandidatePlanSets(sourcePlanData, personality, effortConfig,
                 next.push({
                     plans: beam[b].plans.concat([localPlans[p]]),
                     heuristicScore: beam[b].heuristicScore + localPlans[p].planScore,
-                    totalBlockCount: beam[b].totalBlockCount + localPlans[p].templates.length
+                    totalBlockCount: beam[b].totalBlockCount + localPlans[p].templates.length,
+                    gutterFlexScore: beam[b].gutterFlexScore + (localPlans[p].gutterFlexScore || 0)
                 });
             }
         }
 
         next.sort(function(a, b) {
             if (a.heuristicScore !== b.heuristicScore) return a.heuristicScore - b.heuristicScore;
+            if (b.gutterFlexScore !== a.gutterFlexScore) return b.gutterFlexScore - a.gutterFlexScore;
             return a.totalBlockCount - b.totalBlockCount;
         });
 
-        if (next.length > effortConfig.comboLimit) next = next.slice(0, effortConfig.comboLimit);
+        if (next.length > effortConfig.comboLimit) {
+            var limited = [];
+            if (next.length > 0) limited.push(next[0]);
+
+            var flexSorted = cloneArray(next);
+            flexSorted.sort(function(a, b) {
+                if (b.gutterFlexScore !== a.gutterFlexScore) return b.gutterFlexScore - a.gutterFlexScore;
+                return a.heuristicScore - b.heuristicScore;
+            });
+
+            var flexQuota = Math.min(effortConfig.comboLimit, 1 + Math.floor(effortConfig.comboLimit / 3));
+            for (var f = 0; f < flexSorted.length && limited.length < flexQuota; f++) {
+                if (flexSorted[f].gutterFlexScore <= 0) break;
+                if (arrayHasItem(limited, flexSorted[f])) continue;
+                limited.push(flexSorted[f]);
+            }
+
+            for (var n = 0; n < next.length && limited.length < effortConfig.comboLimit; n++) {
+                if (arrayHasItem(limited, next[n])) continue;
+                limited.push(next[n]);
+            }
+
+            limited.sort(function(a, b) {
+                if (a.heuristicScore !== b.heuristicScore) return a.heuristicScore - b.heuristicScore;
+                if (b.gutterFlexScore !== a.gutterFlexScore) return b.gutterFlexScore - a.gutterFlexScore;
+                return a.totalBlockCount - b.totalBlockCount;
+            });
+            next = limited;
+        }
         beam = next;
     }
 
@@ -1640,7 +2083,8 @@ function buildGlobalCandidatePlanSets(sourcePlanData, personality, effortConfig,
         summaries.push({
             comboIndex: s,
             heuristicScore: Math.round(beam[s].heuristicScore),
-            totalBlockCount: beam[s].totalBlockCount
+            totalBlockCount: beam[s].totalBlockCount,
+            gutterFlexScore: parseFloat((beam[s].gutterFlexScore || 0).toFixed(2))
         });
     }
     debugRoot.globalCandidatePlanSets = summaries;
