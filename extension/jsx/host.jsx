@@ -31,6 +31,7 @@ var OUTPUT_FOLDER_LABEL_META = "FOLDER_LABEL";
 var LAST_SOURCE_FOLDER_PATHS = [];
 var DIGITS_TYPE_ARABIC = 1684627826;
 var CHARACTER_DIRECTION_LTR = 1278366308;
+var MAX_FILENAME_QTY = 400;
 
 var DEFAULTS = {
     sheetWidthIn: 23,
@@ -44,6 +45,7 @@ var DEFAULTS = {
     solverSearchDepth: 68,
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
+    legacySolverEnabled: false,
     hideSourceLayersAfterBuild: true
 };
 
@@ -213,7 +215,15 @@ function parseQtyFromName(name) {
     var m = base.match(/^(\d+)_/);
     if (m && m[1]) {
         var q = parseInt(m[1], 10);
-        return (isNaN(q) || q < 1) ? 1 : q;
+        if (isNaN(q) || q < 1) return 1;
+        if (q > MAX_FILENAME_QTY) {
+            throw new Error(
+                "Detected quantity " + q +
+                " from filename \"" + getFileNameOnly(name) + "\" exceeds the safe limit of " + MAX_FILENAME_QTY +
+                ". This prefix looks like an order number, not a quantity."
+            );
+        }
+        return q;
     }
     return 1;
 }
@@ -580,6 +590,12 @@ function estimatePlanShelfPenalty(layouts, settings, isDominant) {
 
     for (var i = 0; i < layouts.length; i++) {
         var template = layouts[i];
+        if (template.mixedLayout) {
+            if (template.widthFill >= 0.96) fullWidthTemplateCount += 1;
+            else if (template.widthFill < 0.9) underfilledPenalty += 0.35 + ((1 - template.widthFill) * 2.4);
+            continue;
+        }
+
         var rowCapacity = getMaxColumnsForCellWidth(template.cellW, settings);
         if (rowCapacity <= 1) continue;
 
@@ -1064,8 +1080,47 @@ function createBlockTemplateFromGrid(src, grid, planKind, planScore) {
         shortSide: shortSide(grid.blockW, grid.blockH),
         ratio: grid.ratio,
         widthFill: grid.widthFill,
+        mixedLayout: false,
+        piecePlacements: null,
         planKind: planKind || "primary",
-        sourcePlanScore: planScore || 0
+        sourcePlanScore: planScore || 0,
+        selectionScore: grid.score || 0
+    };
+}
+
+function createBlockTemplateFromMixedLayout(src, layout, planKind, planScore) {
+    return {
+        sourceId: src.id,
+        sourceOrdinal: src.ordinal,
+        sourceKey: src.key,
+        sourceRef: src.ref,
+        sourceName: src.name,
+        sourceBaseQty: src.baseQty,
+        sourceQty: src.qty,
+        sourceWidth: src.width,
+        sourceHeight: src.height,
+        sourceArea: src.area,
+        sourceLongSide: src.longSide,
+        sourceShortSide: src.shortSide,
+        count: layout.count,
+        cols: layout.cols,
+        rows: layout.rows,
+        emptyCells: 0,
+        rotatedInside: false,
+        cellW: src.width,
+        cellH: src.height,
+        blockW: layout.blockW,
+        blockH: layout.blockH,
+        area: layout.blockW * layout.blockH,
+        longSide: longSide(layout.blockW, layout.blockH),
+        shortSide: shortSide(layout.blockW, layout.blockH),
+        ratio: layout.ratio,
+        widthFill: layout.widthFill,
+        mixedLayout: true,
+        piecePlacements: cloneArray(layout.piecePlacements),
+        planKind: planKind || "mixed",
+        sourcePlanScore: planScore || 0,
+        selectionScore: layout.score || 0
     };
 }
 
@@ -1116,6 +1171,151 @@ function generatePartitionCandidates(qty, maxBlocks) {
     }
 
     return out;
+}
+
+function countDistinctPlacementCoords(placements, axis) {
+    var coords = [];
+    for (var i = 0; i < placements.length; i++) {
+        var value = axis === "x" ? placements[i].x : placements[i].y;
+        var found = false;
+        for (var j = 0; j < coords.length; j++) {
+            if (Math.abs(coords[j] - value) <= EPS) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) coords.push(value);
+    }
+    return coords.length;
+}
+
+function shouldConsiderMixedOrientationTemplates(src, settings, count) {
+    if (!settings || settings.allowItemRotationInBlock === false) return false;
+    if (!src || count <= 2) return false;
+    if (Math.abs(src.width - src.height) <= EPS) return false;
+
+    var aspect = longSide(src.width, src.height) / Math.max(shortSide(src.width, src.height), EPS);
+    if (aspect < 1.8) return false;
+
+    var orientations = buildItemOrientationOptions(src, settings);
+    if (!orientations || orientations.length < 2) return false;
+
+    var normalCapacity = getMaxColumnsForCellWidth(src.width, settings);
+    var rotatedCapacity = getMaxColumnsForCellWidth(src.height, settings);
+    if (normalCapacity <= 1 || rotatedCapacity <= 1) return false;
+
+    return true;
+}
+
+function chooseBestMixedLayoutForCount(src, count, settings, personality, favorWide) {
+    if (!shouldConsiderMixedOrientationTemplates(src, settings, count)) return null;
+
+    var piece = {
+        sourceId: src.id,
+        sourceKey: src.key,
+        sourceRef: src.ref,
+        sourceName: src.name,
+        width: src.width,
+        height: src.height,
+        area: src.area,
+        longSide: src.longSide,
+        shortSide: src.shortSide
+    };
+    var freeRects = [{
+        x: 0,
+        y: 0,
+        w: getPackingSheetWidth(settings),
+        h: getPackingMaxLength(settings)
+    }];
+    var usedLength = 0;
+    var placements = [];
+    var maxRight = 0;
+    var maxBottom = 0;
+    var rotatedCount = 0;
+    var normalCount = 0;
+
+    for (var i = 0; i < count; i++) {
+        var placement = findBestLegacyPiecePlacement(piece, freeRects, settings, true, usedLength);
+        if (!placement) return null;
+
+        placements.push({
+            x: placement.x,
+            y: placement.y,
+            w: placement.artW,
+            h: placement.artH,
+            rotatedInside: placement.rotatedInside === true
+        });
+
+        if (placement.rotatedInside) rotatedCount += 1;
+        else normalCount += 1;
+
+        freeRects = placeAndUpdateFreeRects(freeRects, placement);
+        if (placement.x + placement.artW > maxRight) maxRight = placement.x + placement.artW;
+        if (placement.y + placement.artH > maxBottom) maxBottom = placement.y + placement.artH;
+        if (placement.y + placement.h > usedLength) usedLength = placement.y + placement.h;
+    }
+
+    if (rotatedCount === 0 || normalCount === 0) return null;
+
+    var sheetWidth = inToPt(settings.sheetWidthIn);
+    var maxLength = inToPt(settings.maxLengthIn);
+    if (maxRight > sheetWidth + EPS || maxBottom > maxLength + EPS) return null;
+
+    var ratio = longSide(maxRight, maxBottom) / Math.max(shortSide(maxRight, maxBottom), EPS);
+    var widthFill = maxRight / Math.max(sheetWidth, EPS);
+    var heightFill = maxBottom / Math.max(maxLength, EPS);
+    var aspectPenalty = Math.max(0, ratio - personality.maxBlockAspectRatio);
+    var widthBias = personality.widthFillPriority / 100.0;
+    var continuityBias = personality.continuityWeight / 100.0;
+    var mixedPenalty = 260 + (count * 18) + (favorWide ? 120 : 0);
+
+    var score =
+        (aspectPenalty * aspectPenalty * 19000) +
+        ((1 - widthFill) * 25000 * (0.55 + (widthBias * 0.45))) +
+        (heightFill * 3000) +
+        (ratio * 360) +
+        (Math.abs(rotatedCount - normalCount) * (28 + (continuityBias * 16))) +
+        mixedPenalty;
+
+    return {
+        count: count,
+        cols: countDistinctPlacementCoords(placements, "x"),
+        rows: countDistinctPlacementCoords(placements, "y"),
+        blockW: maxRight,
+        blockH: maxBottom,
+        ratio: ratio,
+        widthFill: widthFill,
+        score: score,
+        mixedLayout: true,
+        piecePlacements: placements
+    };
+}
+
+function shouldPreferMixedTemplate(gridTemplate, mixedTemplate) {
+    if (!mixedTemplate) return false;
+    if (!gridTemplate) return true;
+
+    if (mixedTemplate.selectionScore + 120 < gridTemplate.selectionScore) return true;
+    if (mixedTemplate.blockH + inToPt(0.55) < gridTemplate.blockH && mixedTemplate.widthFill + 0.02 >= gridTemplate.widthFill) return true;
+    return false;
+}
+
+function getBestTemplateForCountFromCache(sourceCache, count, settings, personality) {
+    if (!sourceCache) return null;
+
+    var gridTemplate = sourceCache.bestBlockByCount[count] || null;
+    var mixedTemplate = null;
+
+    if (shouldConsiderMixedOrientationTemplates(sourceCache.source, settings, count)) {
+        if (!sourceCache.mixedBlockByCount) sourceCache.mixedBlockByCount = {};
+        if (!Object.prototype.hasOwnProperty.call(sourceCache.mixedBlockByCount, count)) {
+            var mixed = chooseBestMixedLayoutForCount(sourceCache.source, count, settings, personality, sourceCache.isDominant);
+            sourceCache.mixedBlockByCount[count] = mixed ? createBlockTemplateFromMixedLayout(sourceCache.source, mixed, "mixed", 0) : null;
+        }
+        mixedTemplate = sourceCache.mixedBlockByCount[count];
+    }
+
+    return shouldPreferMixedTemplate(gridTemplate, mixedTemplate) ? mixedTemplate : gridTemplate;
 }
 
 function chooseBestGridForCount(src, count, settings, personality, favorWide) {
@@ -1192,6 +1392,67 @@ function chooseBestGridForCount(src, count, settings, personality, favorWide) {
     return candidates[0];
 }
 
+function chooseBestGridForCountInRect(src, count, settings, personality, maxWidth, maxHeight) {
+    if (!(maxWidth > EPS) || !(maxHeight > EPS)) return null;
+
+    var spacing = inToPt(settings.spacingIn);
+    var candidates = [];
+    var orientations = buildItemOrientationOptions(src, settings);
+
+    for (var o = 0; o < orientations.length; o++) {
+        var ori = orientations[o];
+
+        for (var cols = 1; cols <= count; cols++) {
+            var rows = Math.ceil(count / cols);
+            var emptyCells = rows * cols - count;
+            var blockW = cols * ori.cellW + (cols - 1) * spacing;
+            var blockH = rows * ori.cellH + (rows - 1) * spacing;
+
+            if (blockW > maxWidth + EPS) continue;
+            if (blockH > maxHeight + EPS) continue;
+
+            var widthFill = blockW / Math.max(maxWidth, EPS);
+            var heightFill = blockH / Math.max(maxHeight, EPS);
+            var ratio = longSide(blockW, blockH) / Math.max(shortSide(blockW, blockH), EPS);
+            var aspectPenalty = Math.max(0, ratio - (personality.maxBlockAspectRatio + 1.2));
+
+            var score =
+                ((1 - heightFill) * 9000) +
+                ((1 - widthFill) * 4200) +
+                (emptyCells * 1100) +
+                (aspectPenalty * aspectPenalty * 10000) +
+                (ratio * 160) +
+                (cols * 45);
+
+            candidates.push({
+                count: count,
+                cols: cols,
+                rows: rows,
+                emptyCells: emptyCells,
+                rotatedInside: ori.rotatedInside,
+                cellW: ori.cellW,
+                cellH: ori.cellH,
+                blockW: blockW,
+                blockH: blockH,
+                ratio: ratio,
+                widthFill: blockW / Math.max(inToPt(settings.sheetWidthIn), EPS),
+                score: score
+            });
+        }
+    }
+
+    if (!candidates.length) return null;
+
+    candidates.sort(function(a, b) {
+        if (a.score !== b.score) return a.score - b.score;
+        if (b.blockH !== a.blockH) return b.blockH - a.blockH;
+        if (a.blockW !== b.blockW) return a.blockW - b.blockW;
+        return a.emptyCells - b.emptyCells;
+    });
+
+    return candidates[0];
+}
+
 function detectDominantSourceId(sources) {
     if (!sources || sources.length === 0) return null;
     var best = sources[0];
@@ -1213,7 +1474,8 @@ function buildSourcePlanCacheForSource(src, settings, personality, isDominant) {
     return {
         source: src,
         isDominant: isDominant,
-        bestBlockByCount: countCache
+        bestBlockByCount: countCache,
+        mixedBlockByCount: {}
     };
 }
 
@@ -1242,14 +1504,18 @@ function buildSourcePlanCandidates(src, sourceCache, settings, personality, effo
         var maxHeight = 0;
 
         for (var i = 0; i < part.length; i++) {
-            var template = sourceCache.bestBlockByCount[part[i]];
+            var template = getBestTemplateForCountFromCache(sourceCache, part[i], settings, personality);
             if (!template) {
                 failed = true;
                 break;
             }
 
             layouts.push(template);
-            shapeKeyParts.push([template.count, template.cols, template.rows, template.rotatedInside ? 1 : 0].join(":"));
+            shapeKeyParts.push(
+                template.mixedLayout
+                    ? [template.count, "mix", Math.round(template.blockW), Math.round(template.blockH)].join(":")
+                    : [template.count, template.cols, template.rows, template.rotatedInside ? 1 : 0].join(":")
+            );
             totalArea += template.area;
             totalEmpty += template.emptyCells;
             totalAspect += Math.max(0, template.ratio - personality.maxBlockAspectRatio);
@@ -1535,6 +1801,272 @@ function countUnplacedCopies(layoutState) {
     if (!layoutState || !layoutState.unplaced) return 0;
     for (var i = 0; i < layoutState.unplaced.length; i++) total += layoutState.unplaced[i].count;
     return total;
+}
+
+function buildLegacyExpandedPieces(sources) {
+    var out = [];
+    if (!sources || !sources.length) return out;
+
+    for (var i = 0; i < sources.length; i++) {
+        var src = sources[i];
+        for (var q = 0; q < src.qty; q++) {
+            out.push({
+                sourceId: src.id,
+                sourceKey: src.key,
+                sourceRef: src.ref,
+                sourceName: src.name,
+                width: src.width,
+                height: src.height,
+                area: src.area,
+                longSide: src.longSide,
+                shortSide: src.shortSide
+            });
+        }
+    }
+
+    return out;
+}
+
+function sortLegacyExpandedPieces(pieces) {
+    pieces.sort(function(a, b) {
+        if (b.longSide !== a.longSide) return b.longSide - a.longSide;
+        if (b.area !== a.area) return b.area - a.area;
+        if (b.height !== a.height) return b.height - a.height;
+        if (b.width !== a.width) return b.width - a.width;
+        return compareStrings(a.sourceName, b.sourceName);
+    });
+}
+
+function createLegacyPieceBlock(piece, rotatedInside) {
+    var blockW = rotatedInside ? piece.height : piece.width;
+    var blockH = rotatedInside ? piece.width : piece.height;
+    return {
+        uid: nextBlockUid(),
+        sourceId: piece.sourceId,
+        sourceKey: piece.sourceKey,
+        sourceRef: piece.sourceRef,
+        sourceName: piece.sourceName,
+        count: 1,
+        cols: 1,
+        rows: 1,
+        rotatedInside: rotatedInside === true,
+        cellW: blockW,
+        cellH: blockH,
+        blockW: blockW,
+        blockH: blockH,
+        area: piece.area,
+        longSide: longSide(blockW, blockH),
+        shortSide: shortSide(blockW, blockH),
+        planKind: "piece",
+        planScore: 0
+    };
+}
+
+function getLegacyPaddedDims(piece, rotatedInside, settings) {
+    var spacing = inToPt(settings.spacingIn);
+    var artW = rotatedInside ? piece.height : piece.width;
+    var artH = rotatedInside ? piece.width : piece.height;
+    return {
+        artW: artW,
+        artH: artH,
+        w: artW + spacing,
+        h: artH + spacing
+    };
+}
+
+function legacyScorePlacement(freeRect, pw, ph, currentUsedLength) {
+    var leftoverHoriz = freeRect.w - pw;
+    var leftoverVert = freeRect.h - ph;
+    var shortFit = Math.min(leftoverHoriz, leftoverVert);
+    var longFit = Math.max(leftoverHoriz, leftoverVert);
+    var areaFit = (freeRect.w * freeRect.h) - (pw * ph);
+    var projectedBottom = freeRect.y + ph;
+    var projectedUsedLength = projectedBottom > currentUsedLength ? projectedBottom : currentUsedLength;
+
+    return {
+        shortFit: shortFit,
+        longFit: longFit,
+        areaFit: areaFit,
+        projectedUsedLength: projectedUsedLength
+    };
+}
+
+function isBetterLegacyPlacementScore(candidate, currentBest) {
+    if (!currentBest) return true;
+    if (candidate.shortFit !== currentBest.shortFit) return candidate.shortFit < currentBest.shortFit;
+    if (candidate.areaFit !== currentBest.areaFit) return candidate.areaFit < currentBest.areaFit;
+    if (candidate.longFit !== currentBest.longFit) return candidate.longFit < currentBest.longFit;
+    if (candidate.projectedUsedLength !== currentBest.projectedUsedLength) return candidate.projectedUsedLength < currentBest.projectedUsedLength;
+    return false;
+}
+
+function findBestLegacyPiecePlacement(piece, freeRects, settings, allowRotation, currentUsedLength) {
+    var best = null;
+    var normal = getLegacyPaddedDims(piece, false, settings);
+    var rotated = allowRotation ? getLegacyPaddedDims(piece, true, settings) : null;
+
+    for (var i = 0; i < freeRects.length; i++) {
+        var fr = freeRects[i];
+
+        if (normal.w <= fr.w + EPS && normal.h <= fr.h + EPS) {
+            var normalScore = legacyScorePlacement(fr, normal.w, normal.h, currentUsedLength);
+            if (isBetterLegacyPlacementScore(normalScore, best ? best.score : null)) {
+                best = {
+                    x: fr.x,
+                    y: fr.y,
+                    w: normal.w,
+                    h: normal.h,
+                    artW: normal.artW,
+                    artH: normal.artH,
+                    rotatedInside: false,
+                    score: normalScore
+                };
+            }
+        }
+
+        if (rotated && rotated.w <= fr.w + EPS && rotated.h <= fr.h + EPS) {
+            var rotatedScore = legacyScorePlacement(fr, rotated.w, rotated.h, currentUsedLength);
+            if (isBetterLegacyPlacementScore(rotatedScore, best ? best.score : null)) {
+                best = {
+                    x: fr.x,
+                    y: fr.y,
+                    w: rotated.w,
+                    h: rotated.h,
+                    artW: rotated.artW,
+                    artH: rotated.artH,
+                    rotatedInside: true,
+                    score: rotatedScore
+                };
+            }
+        }
+    }
+
+    return best;
+}
+
+function buildLegacySourcePlanCache(sources) {
+    var cache = { bySource: {} };
+    if (!sources || !sources.length) return cache;
+
+    for (var i = 0; i < sources.length; i++) {
+        var src = sources[i];
+        cache.bySource[src.id] = {
+            bestBlockByCount: {
+                1: {
+                    sourceId: src.id,
+                    sourceKey: src.key,
+                    sourceRef: src.ref,
+                    sourceName: src.name,
+                    count: 1,
+                    cols: 1,
+                    rows: 1,
+                    rotatedInside: false,
+                    cellW: src.width,
+                    cellH: src.height,
+                    blockW: src.width,
+                    blockH: src.height,
+                    area: src.area,
+                    longSide: src.longSide,
+                    shortSide: src.shortSide,
+                    planKind: "piece",
+                    planScore: 0
+                }
+            }
+        };
+    }
+
+    return cache;
+}
+
+function createLegacyDebugRoot() {
+    return {
+        requestedPreset: "Legacy JS",
+        selectedPresetPersonality: "Legacy JS",
+        selectedSearchEffort: "Legacy",
+        strategyName: "Legacy JS",
+        isBaseline: true,
+        sourcePlanSummary: [],
+        globalCandidatePlanSets: [],
+        blockOrderVariantsConsidered: [],
+        stageRecords: [],
+        splitStats: { attempted: 0, accepted: 0, blocksSplit: 0, copiesRecovered: 0 },
+        holeFillStats: { attempted: 0, accepted: 0, filledCopies: 0 },
+        localRepairStats: null,
+        compactionStats: null,
+        rejectedReasons: [],
+        candidateComparison: [],
+        rejectedCandidates: [],
+        failedSources: []
+    };
+}
+
+function solveLegacyFromSources(sources, settings) {
+    var pieces = buildLegacyExpandedPieces(sources);
+    var placed = [];
+    var unplaced = [];
+    var freeRects = [{
+        x: 0,
+        y: 0,
+        w: getPackingSheetWidth(settings),
+        h: getPackingMaxLength(settings)
+    }];
+    var usedLength = 0;
+    var allowRotation = settings.allowItemRotationInBlock !== false;
+    var sourcePlanCache = buildLegacySourcePlanCache(sources);
+    var debugRoot = createLegacyDebugRoot();
+    var personality = { name: "Legacy", strategyName: "Legacy JS" };
+
+    sortLegacyExpandedPieces(pieces);
+
+    for (var i = 0; i < pieces.length; i++) {
+        var piece = pieces[i];
+        var placement = findBestLegacyPiecePlacement(piece, freeRects, settings, allowRotation, usedLength);
+
+        if (!placement) {
+            unplaced.push(createLegacyPieceBlock(piece, false));
+            continue;
+        }
+
+        placed.push({
+            block: createLegacyPieceBlock(piece, placement.rotatedInside),
+            x: placement.x,
+            y: placement.y,
+            paddedW: placement.w,
+            paddedH: placement.h,
+            rotatedOnSheet: false,
+            stageName: "legacy",
+            placementReason: "legacy-piece"
+        });
+
+        freeRects = placeAndUpdateFreeRects(freeRects, placement);
+        if (placement.y + placement.h > usedLength) usedLength = placement.y + placement.h;
+    }
+
+    var layoutState = buildLayoutState(placed, unplaced, freeRects, usedLength, "Legacy JS", "legacy", debugRoot);
+    decorateLayoutState(layoutState, settings, sourcePlanCache, personality);
+    debugRoot.stageRecords.push(buildStageRecord("legacy", layoutState));
+    debugRoot.debugSummaryText = buildDebugSummaryText({
+        layoutState: layoutState,
+        debugRoot: debugRoot,
+        strategyName: "Legacy JS",
+        presetName: "Legacy JS",
+        personalityName: "Legacy JS"
+    });
+
+    return {
+        sources: sources,
+        layout: layoutState,
+        usedSettings: settings,
+        debugMeta: debugRoot,
+        winningStrategyName: "Legacy JS",
+        winningPreset: "Legacy JS",
+        winningSearchEffort: "Legacy",
+        winningScoreBreakdown: layoutState.score,
+        sanityMetrics: layoutState.metrics.sanity,
+        holeFillStats: debugRoot.holeFillStats,
+        splitStats: debugRoot.splitStats,
+        candidateCount: 1
+    };
 }
 
 function clonePlacedList(list) {
@@ -2372,7 +2904,7 @@ function buildFallbackPartitions(count, splitAggressiveness) {
     return out;
 }
 
-function splitBlockIntoFallbackOptions(block, sourcePlanCache, personality) {
+function splitBlockIntoFallbackOptions(block, sourcePlanCache, personality, settings, preferredRect) {
     var sourceCache = sourcePlanCache.bySource[block.sourceId];
     if (!sourceCache) return [];
 
@@ -2386,7 +2918,7 @@ function splitBlockIntoFallbackOptions(block, sourcePlanCache, personality) {
         var valid = true;
 
         for (var i = 0; i < partition.length; i++) {
-            var template = sourceCache.bestBlockByCount[partition[i]];
+            var template = getBestTemplateForCountFromCache(sourceCache, partition[i], settings, personality);
             if (!template) {
                 valid = false;
                 break;
@@ -2405,6 +2937,61 @@ function splitBlockIntoFallbackOptions(block, sourcePlanCache, personality) {
             partition: partition,
             blocks: blocks
         });
+
+        if (preferredRect) {
+            for (var focus = 0; focus < partition.length; focus++) {
+                var focusedCount = partition[focus];
+                var holeGrid = chooseBestGridForCountInRect(
+                    sourceCache.source,
+                    focusedCount,
+                    settings,
+                    personality,
+                    preferredRect.w,
+                    preferredRect.h
+                );
+                if (!holeGrid) continue;
+
+                var focusedTemplate = createBlockTemplateFromGrid(sourceCache.source, holeGrid, "holeFit", 0);
+                var standardTemplate = getBestTemplateForCountFromCache(sourceCache, focusedCount, settings, personality);
+                if (standardTemplate &&
+                    Math.abs(focusedTemplate.blockW - standardTemplate.blockW) <= EPS &&
+                    Math.abs(focusedTemplate.blockH - standardTemplate.blockH) <= EPS &&
+                    focusedTemplate.rotatedInside === standardTemplate.rotatedInside &&
+                    focusedTemplate.cols === standardTemplate.cols &&
+                    focusedTemplate.rows === standardTemplate.rows) {
+                    continue;
+                }
+
+                var holeBlocks = [];
+                valid = true;
+
+                for (var h = 0; h < partition.length; h++) {
+                    if (h === focus) {
+                        holeBlocks.push(instantiateBlockFromTemplate(focusedTemplate));
+                        continue;
+                    }
+
+                    var altTemplate = getBestTemplateForCountFromCache(sourceCache, partition[h], settings, personality);
+                    if (!altTemplate) {
+                        valid = false;
+                        break;
+                    }
+                    holeBlocks.push(instantiateBlockFromTemplate(altTemplate));
+                }
+
+                if (!valid) continue;
+
+                var holeKey = key + "@hole:" + focus + ":" + focusedTemplate.cols + "x" + focusedTemplate.rows + (focusedTemplate.rotatedInside ? "R" : "N");
+                if (seen[holeKey]) continue;
+                seen[holeKey] = true;
+
+                options.push({
+                    label: "splitHoleFit:" + holeKey,
+                    partition: partition,
+                    blocks: holeBlocks
+                });
+            }
+        }
     }
 
     return options;
@@ -2571,7 +3158,7 @@ function runAdaptiveBlockSplittingPass(layoutState, sourcePlanCache, personality
             var target = current.unplaced[i];
             if (target.count <= 1) continue;
 
-            var options = splitBlockIntoFallbackOptions(target, sourcePlanCache, personality);
+            var options = splitBlockIntoFallbackOptions(target, sourcePlanCache, personality, settings, null);
             for (var o = 0; o < options.length; o++) {
                 stats.attempted += 1;
                 var candidate = applyReplacementOption(current, target, options[o], settings, personality, effortConfig, "adaptiveSplit", null);
@@ -2658,7 +3245,7 @@ function runHoleFillingPass(layoutState, sourcePlanCache, personality, effortCon
 
             for (var u = 0; u < current.unplaced.length; u++) {
                 var target = current.unplaced[u];
-                var options = splitBlockIntoFallbackOptions(target, sourcePlanCache, personality);
+                var options = splitBlockIntoFallbackOptions(target, sourcePlanCache, personality, settings, hole.rect);
                 var tries = 0;
 
                 for (var o = 0; o < options.length; o++) {
@@ -3146,19 +3733,34 @@ function transformLocalForBlockRotation(localX, localY, cellW, cellH, blockW, bl
 }
 
 function renderPlacedBlocks(layoutState, outputLayer, settings) {
-    var spacing = inToPt(settings.spacingIn);
-
     for (var i = 0; i < layoutState.placed.length; i++) {
         var pb = layoutState.placed[i];
         var b = pb.block;
+        var placements = [];
 
-        for (var n = 0; n < b.count; n++) {
-            var local = getLocalCellPosition(b, n, spacing);
+        if (b.piecePlacements && b.piecePlacements.length) {
+            placements = cloneArray(b.piecePlacements);
+        } else {
+            var spacing = inToPt(settings.spacingIn);
+            for (var n = 0; n < b.count; n++) {
+                var local = getLocalCellPosition(b, n, spacing);
+                placements.push({
+                    x: local.x,
+                    y: local.y,
+                    w: b.cellW,
+                    h: b.cellH,
+                    rotatedInside: b.rotatedInside
+                });
+            }
+        }
+
+        for (var p = 0; p < placements.length; p++) {
+            var piece = placements[p];
             var tr = transformLocalForBlockRotation(
-                local.x,
-                local.y,
-                b.cellW,
-                b.cellH,
+                piece.x,
+                piece.y,
+                piece.w,
+                piece.h,
                 b.blockW,
                 b.blockH,
                 pb.rotatedOnSheet
@@ -3166,7 +3768,7 @@ function renderPlacedBlocks(layoutState, outputLayer, settings) {
 
             var itemX = pb.x + tr.x;
             var itemY = pb.y + tr.y;
-            var rotationDeg = getCanonicalRenderRotationDeg(b.rotatedInside, pb.rotatedOnSheet);
+            var rotationDeg = getCanonicalRenderRotationDeg(piece.rotatedInside, pb.rotatedOnSheet);
 
             placeSingleCopy(b.sourceRef, outputLayer, itemX, itemY, rotationDeg, b.sourceKey);
         }
@@ -3192,6 +3794,7 @@ function buildSummary(result, settings) {
     var holeStats = result.holeFillStats || { accepted: 0, attempted: 0, filledCopies: 0 };
 
     lines.push("WeMust NESTER v7");
+    lines.push("Solver mode: " + (settings.legacySolverEnabled ? "Legacy JS (0.0.2 piece nesting)" : "Modern block solver"));
     lines.push("Requested preset: " + settings.optimizePreset);
     lines.push("Winning strategy: " + result.winningStrategyName);
     lines.push("Winning personality: " + result.winningPreset);
@@ -3475,7 +4078,9 @@ function buildSearchMeta(result) {
 
 function buildOnce(doc, settings) {
     var sources = collectAndNormalizeSources(doc, settings);
-    var result = solveFromSources(sources, settings);
+    var result = settings.legacySolverEnabled
+        ? solveLegacyFromSources(sources, settings)
+        : solveFromSources(sources, settings);
     renderSolution(doc, result, settings);
     return result;
 }
@@ -3609,6 +4214,7 @@ function normalizeSettingsFromPanel(input) {
     s.solverSearchDepth = clamp(_numOr(input.solverSearchDepth, s.solverSearchDepth), 0, 100);
     s.allowItemRotationInBlock = _boolOr(input.allowItemRotationInBlock, s.allowItemRotationInBlock);
     s.allowBlockRotationOnSheet = _boolOr(input.allowBlockRotationOnSheet, s.allowBlockRotationOnSheet);
+    s.legacySolverEnabled = _boolOr(input.legacySolverEnabled, s.legacySolverEnabled);
     s.hideSourceLayersAfterBuild = DEFAULTS.hideSourceLayersAfterBuild;
     s.quantityOverrides = normalizeQuantityOverrides(input.quantityOverrides);
     s.orderEmailText = String(input.orderEmailText || "");
@@ -3628,6 +4234,7 @@ function nesterGetDefaultSettings() {
         solverSearchDepth: DEFAULTS.solverSearchDepth,
         allowItemRotationInBlock: DEFAULTS.allowItemRotationInBlock,
         allowBlockRotationOnSheet: DEFAULTS.allowBlockRotationOnSheet,
+        legacySolverEnabled: DEFAULTS.legacySolverEnabled,
         hideSourceLayersAfterBuild: DEFAULTS.hideSourceLayersAfterBuild
     });
 }

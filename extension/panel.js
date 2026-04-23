@@ -5,6 +5,7 @@
   if (!isFinite(today) || today < 1 || today > 31) today = 1;
 
   var STORAGE_KEY = "nester.settings.v5";
+  var STORAGE_SCHEMA_VERSION = 2;
   var formEl = document.getElementById("settings-form");
   var runBtn = document.getElementById("btn-run");
   var exportBtn = document.getElementById("btn-export");
@@ -21,6 +22,7 @@
   var orderEmailTextEl = document.getElementById("order-email-text");
   var resultNameField = document.getElementById("result-name-field");
   var panelFeedbackEl = document.getElementById("panel-feedback");
+  var solverModeNoteEl = document.getElementById("solverModeNote");
 
   var RESULT_NAME_SIZE_TOKEN = "{SIZE}";
   var DEFAULTS = {
@@ -35,6 +37,7 @@
     solverSearchDepth: 68,
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
+    legacySolverEnabled: false,
     outputDate: today,
     tagUSA: false,
     tagRUSH: false,
@@ -61,6 +64,7 @@
     "searchEffort",
     "allowItemRotationInBlock",
     "allowBlockRotationOnSheet",
+    "legacySolverEnabled",
     "outputDate",
     "tagUSA",
     "tagRUSH",
@@ -95,7 +99,8 @@
     solverHoleRepairBias: true,
     solverSearchDepth: true,
     allowItemRotationInBlock: true,
-    allowBlockRotationOnSheet: true
+    allowBlockRotationOnSheet: true,
+    legacySolverEnabled: true
   };
   var NAMING_RESETTABLE_IDS = {
     outputPcCount: true,
@@ -195,6 +200,21 @@
       if (Object.prototype.hasOwnProperty.call(source, key)) out[key] = source[key];
     }
     return out;
+  }
+
+  function migrateStoredSettings(stored) {
+    if (!stored || typeof stored !== "object") return null;
+
+    var next = merge({}, stored);
+    var schemaVersion = Number(next.storageSchemaVersion) || 0;
+
+    if (schemaVersion < 2) {
+      next.allowItemRotationInBlock = true;
+      next.allowBlockRotationOnSheet = true;
+    }
+
+    next.storageSchemaVersion = STORAGE_SCHEMA_VERSION;
+    return next;
   }
 
   function sanitizeQty(value, fallback) {
@@ -325,7 +345,7 @@
   function readStoredSettings() {
     try {
       var raw = window.localStorage.getItem(STORAGE_KEY);
-      return raw ? parseJsonSafe(raw) : null;
+      return raw ? migrateStoredSettings(parseJsonSafe(raw)) : null;
     } catch (_e) {
       return null;
     }
@@ -349,6 +369,7 @@
       resultNameManualOverride: state.resultNameManualOverride,
       resultNameTemplateText: state.resultNameTemplateText
     });
+    out.storageSchemaVersion = STORAGE_SCHEMA_VERSION;
     delete out.orderEmailText;
     return out;
   }
@@ -379,6 +400,7 @@
       else el.value = String(settings[id]);
     }
     updateAllSolverSliderValues();
+    updateLegacySolverUi();
     updateNamingFieldVisualStates();
   }
 
@@ -450,6 +472,32 @@
 
   function updateAllSolverSliderValues() {
     for (var i = 0; i < TUNING_SLIDER_IDS.length; i++) updateSolverSliderValue(TUNING_SLIDER_IDS[i]);
+  }
+
+  function setLegacyLockedState(inputId, locked) {
+    var input = byId(inputId);
+    var wrapper = input ? input.parentNode : null;
+    if (!input) return;
+    while (wrapper && wrapper.tagName !== "LABEL") wrapper = wrapper.parentNode;
+    input.disabled = Boolean(locked);
+    if (wrapper) wrapper.classList.toggle("legacy-locked", Boolean(locked));
+  }
+
+  function updateLegacySolverUi() {
+    var legacyToggle = byId("legacySolverEnabled");
+    var legacyEnabled = Boolean(legacyToggle && legacyToggle.checked);
+
+    if (solverModeNoteEl) {
+      solverModeNoteEl.textContent = legacyEnabled
+        ? "Legacy JS 0.2 method"
+        : "Quick human bias";
+    }
+
+    for (var i = 0; i < TUNING_SLIDER_IDS.length; i++) {
+      setLegacyLockedState(TUNING_SLIDER_IDS[i], legacyEnabled);
+    }
+
+    setLegacyLockedState("allowBlockRotationOnSheet", legacyEnabled);
   }
 
   function updateNamingFieldVisualState(id) {
@@ -1263,6 +1311,7 @@
       if (!target || !target.id) return;
 
       if (target.type === "range") updateSolverSliderValue(target.id);
+      if (target.id === "legacySolverEnabled") updateLegacySolverUi();
       if (NAMING_RESETTABLE_IDS[target.id]) updateNamingFieldVisualState(target.id);
 
       if (isNamingFieldId(target.id)) {
