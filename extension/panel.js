@@ -12,6 +12,7 @@
   var runActionEl = runBtn ? runBtn.parentNode : null;
   var exportActionEl = exportBtn ? exportBtn.parentNode : null;
   var exportFolderBtn = document.getElementById("btn-export-folder");
+  var exportDpiBtn = document.getElementById("btn-export-dpi");
   var regenerateNameBtn = document.getElementById("btn-regenerate-name");
   var resetBtn = document.getElementById("btn-reset");
   var inventoryListEl = document.getElementById("inventory-list");
@@ -40,6 +41,7 @@
     allowItemRotationInBlock: true,
     allowBlockRotationOnSheet: true,
     legacySolverEnabled: false,
+    autoNestEnabled: true,
     outputDate: today,
     tagUSA: false,
     tagRUSH: false,
@@ -67,6 +69,7 @@
     "allowItemRotationInBlock",
     "allowBlockRotationOnSheet",
     "legacySolverEnabled",
+    "autoNestEnabled",
     "outputDate",
     "tagUSA",
     "tagRUSH",
@@ -118,6 +121,7 @@
     resultSizeText: "",
     outputBoundsText: "",
     sourceFolderLabel: "",
+    exportDpi600: false,
     resultNameManualOverride: false,
     resultNameTemplateText: "",
     orderEmailText: ""
@@ -365,6 +369,7 @@
       lastSourceItems: state.lastSourceItems,
       lastSourceFolderPaths: state.lastSourceFolderPaths,
       extraExportFolderPath: state.extraExportFolderPath,
+      exportDpi600: state.exportDpi600,
       resultSizeText: state.resultSizeText,
       outputBoundsText: state.outputBoundsText,
       sourceFolderLabel: state.sourceFolderLabel,
@@ -597,6 +602,13 @@
     exportFolderBtn.title = "Extra export folder: " + String(state.extraExportFolderPath) + "\nClick to choose a different folder.";
   }
 
+  function updateExportDpiButton() {
+    if (!exportDpiBtn) return;
+    if (exportDpiBtn.classList) exportDpiBtn.classList.toggle("is-selected", Boolean(state.exportDpi600));
+    exportDpiBtn.setAttribute("aria-pressed", state.exportDpi600 ? "true" : "false");
+    exportDpiBtn.title = state.exportDpi600 ? "Export at 600 dpi" : "Export at 300 dpi";
+  }
+
   function chooseExtraExportFolder() {
     if (!hasCepBridge() || !window.cep || !window.cep.fs || typeof window.cep.fs.showOpenDialogEx !== "function") {
       setPanelFeedback("Modern folder picker is not available in this host.", "warning", 3600);
@@ -644,6 +656,7 @@
       exportBtn.setAttribute("aria-busy", isExportBusy ? "true" : "false");
     }
     if (exportFolderBtn) exportFolderBtn.disabled = isBusy;
+    if (exportDpiBtn) exportDpiBtn.disabled = isBusy;
     if (orderEmailBtn) orderEmailBtn.disabled = isBusy;
     if (regenerateNameBtn) regenerateNameBtn.disabled = isBusy || !state.outputBoundsText;
 
@@ -655,6 +668,11 @@
     if (!autoNestTimer) return;
     window.clearTimeout(autoNestTimer);
     autoNestTimer = null;
+  }
+
+  function isAutoNestEnabled() {
+    var toggle = byId("autoNestEnabled");
+    return !toggle || Boolean(toggle.checked);
   }
 
   function setOrderEmailVisibility(isVisible) {
@@ -684,6 +702,10 @@
   }
 
   function scheduleAutoNest() {
+    if (!isAutoNestEnabled()) {
+      cancelAutoNest();
+      return;
+    }
     autoNestQueued = true;
     if (autoNestTimer) window.clearTimeout(autoNestTimer);
     autoNestTimer = window.setTimeout(flushAutoNest, AUTO_NEST_DELAY_MS);
@@ -1169,6 +1191,7 @@
 
     var payload = JSON.stringify({
       fileName: exportName,
+      resolutionDpi: state.exportDpi600 ? 600 : 300,
       folderPaths: sanitizeFolderPaths(
         state.lastSourceFolderPaths.concat(state.extraExportFolderPath ? [state.extraExportFolderPath] : [])
       )
@@ -1261,6 +1284,7 @@
     state.lastSourceItems = sanitizeSourceItems(stored.lastSourceItems);
     state.lastSourceFolderPaths = sanitizeFolderPaths(stored.lastSourceFolderPaths);
     state.extraExportFolderPath = stored.extraExportFolderPath ? String(stored.extraExportFolderPath) : "";
+    state.exportDpi600 = Boolean(stored.exportDpi600);
     state.outputBoundsText = stored.outputBoundsText ? String(stored.outputBoundsText) : "";
     state.sourceFolderLabel = stored.sourceFolderLabel ? String(stored.sourceFolderLabel) : "";
     state.resultSizeText = stored.resultSizeText ? String(stored.resultSizeText) : "";
@@ -1270,6 +1294,7 @@
 
     setFormValues(startSettings);
     updateExtraExportFolderButton();
+    updateExportDpiButton();
     renderInventory(state.lastSourceItems);
     if (orderEmailTextEl) orderEmailTextEl.value = "";
     setOrderEmailVisibility(false);
@@ -1319,6 +1344,12 @@
       if (target.type === "range") updateSolverSliderValue(target.id);
       if (target.id === "legacySolverEnabled") updateLegacySolverUi();
       if (NAMING_RESETTABLE_IDS[target.id]) updateNamingFieldVisualState(target.id);
+
+      if (target.id === "autoNestEnabled") {
+        writeStoredSettings(buildStoredState(getFormValues()));
+        if (!target.checked) cancelAutoNest();
+        return;
+      }
 
       if (isNamingFieldId(target.id)) {
         refreshOutputNameFromInputs();
@@ -1464,6 +1495,13 @@
         chooseExtraExportFolder();
       });
     }
+    if (exportDpiBtn) {
+      exportDpiBtn.addEventListener("click", function () {
+        state.exportDpi600 = !state.exportDpi600;
+        updateExportDpiButton();
+        writeStoredSettings(buildStoredState(getFormValues()));
+      });
+    }
     if (regenerateNameBtn) {
       regenerateNameBtn.addEventListener("click", function () {
         exitResultNameEditMode();
@@ -1480,10 +1518,12 @@
       setFormValues(combinedDefaults);
       state.quantityOverrides = {};
       clearPendingOrderState();
+      state.exportDpi600 = false;
       renderInventory(state.lastSourceItems);
       state.resultNameManualOverride = false;
       state.resultNameTemplateText = "";
       updateExtraExportFolderButton();
+      updateExportDpiButton();
       if (state.outputBoundsText) refreshDisplayedResultName(combinedDefaults);
       else setResultSizeText("", { manualOverride: false, templateText: "" });
       writeStoredSettings(buildStoredState(combinedDefaults));
@@ -1504,5 +1544,3 @@
     initWithDefaults(parsed);
   });
 })();
-
-

@@ -4386,12 +4386,17 @@ function getSourceFolderPathsFromDocument(doc) {
     return out;
 }
 
-function createPngImageCaptureOptions300Dpi() {
+function normalizeExportResolutionDpi(value) {
+    var dpi = Number(value);
+    return dpi === 600 ? 600 : 300;
+}
+
+function createPngImageCaptureOptions(dpi) {
     var options = new ImageCaptureOptions();
     options.antiAliasing = true;
     options.transparency = true;
     options.matte = false;
-    options.resolution = 300;
+    options.resolution = normalizeExportResolutionDpi(dpi);
     return options;
 }
 
@@ -4418,7 +4423,7 @@ function withIsolatedOutputLayer(doc, callback) {
     }
 }
 
-function exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths) {
+function exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths, resolutionDpi) {
     var outputLayer = findLayerByName(doc, OUTPUT_LAYER_NAME);
     if (!outputLayer || outputLayer.pageItems.length === 0) {
         throw new Error("No NEST_BUILD output found to export.");
@@ -4432,7 +4437,7 @@ function exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths) {
     var exportedPaths = [];
     var failedPaths = [];
     var overwrittenCount = 0;
-    var options = createPngImageCaptureOptions300Dpi();
+    var options = createPngImageCaptureOptions(resolutionDpi);
     var clipBounds = [captureBounds.left, captureBounds.top, captureBounds.right, captureBounds.bottom];
     var exportTargets = [];
 
@@ -4745,11 +4750,13 @@ function nesterExportOutputPngToSourceFolders(payloadJson) {
         }
 
         var exportBaseName = sanitizeExportBaseName(payload && payload.fileName ? payload.fileName : "");
-        var exportResult = exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths);
+        var resolutionDpi = normalizeExportResolutionDpi(payload && payload.resolutionDpi);
+        var exportResult = exportOutputLayerPngToFolders(doc, exportBaseName, folderPaths, resolutionDpi);
 
         return _jsonStringify({
             ok: true,
             fileName: exportBaseName,
+            resolutionDpi: resolutionDpi,
             exportedPaths: exportResult.exportedPaths,
             failedPaths: exportResult.failedPaths,
             overwrittenCount: exportResult.overwrittenCount

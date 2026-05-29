@@ -259,10 +259,10 @@ h2 {
 
 .rotation-stack.tune-rotation-stack {
   display: grid;
-  width: min(78%, 270px);
+  width: min(100%, 360px);
   margin: 7px auto 0;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
-  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 5px;
 }
 
 .rotation-stack.tune-rotation-stack .check-grid {
@@ -272,8 +272,8 @@ h2 {
 .rotation-stack.tune-rotation-stack .check-grid span {
   width: 100%;
   min-height: 20px;
-  padding: 0 7px;
-  font-size: 10px;
+  padding: 0 5px;
+  font-size: 9.5px;
   white-space: nowrap;
   border-radius: 11px;
 }
@@ -480,6 +480,7 @@ select {
 }
 
 .export-action {
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
   background-image: linear-gradient(30deg, #e1b517 -7%, hsl(112, 56%, 39%) 60%);
   /* box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); */
 }
@@ -588,6 +589,15 @@ button {
   border-bottom-left-radius: 14px;
 }
 
+.export-action > .icon-button {
+  border-radius: 0;
+}
+
+.export-action > .icon-button:last-child {
+  border-top-right-radius: 14px;
+  border-bottom-right-radius: 14px;
+}
+
 .nest-action > #btn-run:hover,
 .export-action > #btn-export:hover {
   background: rgba(255, 255, 255, 0.08);
@@ -654,6 +664,18 @@ button {
 
 .icon-button.is-selected {
   background: rgba(36, 56, 76, 0.08);
+}
+
+.export-dpi-button {
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.export-dpi-button.is-selected {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
 }
 
 .icon-button-img {
