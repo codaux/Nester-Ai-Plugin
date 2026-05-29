@@ -185,7 +185,7 @@ function getPreferredFolderLabel(pathOrName) {
 function isAcceptedSourceFolderLabel(label) {
     var value = normalizeAsciiDigits(trimStr(label || ""));
     if (!value) return false;
-    return /^(?:.+_\d{4}|.+_\d{6}|\d{5})$/.test(value);
+    return /^(?:.+_\d{4,6}|\d{5})$/.test(value);
 }
 
 function sanitizeFolderPaths(paths) {
