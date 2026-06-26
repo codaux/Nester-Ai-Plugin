@@ -667,7 +667,7 @@ button {
 .nest-action:hover,
 .export-action:hover {
   filter: saturate(1.1) brightness(1.04);
-  transform: translateY(-0.5px);
+  transform: translateY(-5px) scale(1.02);
 }
 
 .nest-action.is-busy,
