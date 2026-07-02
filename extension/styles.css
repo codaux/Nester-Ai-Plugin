@@ -505,11 +505,17 @@ select {
   grid-template-columns: minmax(0, 1fr) 28px;
   gap: 0;
   align-items: stretch;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 14px;
   isolation: isolate;
   background-size: 140% 140%;
   background-position: 0% 50%;
+  --action-glow-color: rgba(88, 213, 255, 0.8);
+  --action-glow-color-2: rgba(124, 255, 130, 0.5);
+  --action-glow-core: rgba(255, 255, 255, 0.92);
+  --action-glow-top: -10px;
+  --action-glow-height: 5px;
+  --action-glow-blur: 15px;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset 0 -1px 0 rgba(0, 0, 0, 0.28),
@@ -517,7 +523,34 @@ select {
   transition: filter 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
+.nest-action::before,
+.export-action::before {
+  content: "";
+  position: absolute;
+  left: 9%;
+  right: 9%;
+  top: var(--action-glow-top);
+  height: var(--action-glow-height);
+  border-radius: 999px;
+  background:
+    radial-gradient(ellipse at center, var(--action-glow-core) 0%, transparent 58%),
+    linear-gradient(90deg, transparent 0%, var(--action-glow-color) 24%, var(--action-glow-color-2) 58%, var(--action-glow-color) 82%, transparent 100%);
+  filter: blur(var(--action-glow-blur));
+  opacity: 0;
+  transform: translateY(5px) scaleX(0.62);
+  transform-origin: center;
+  pointer-events: none;
+  z-index: 0;
+  transition:
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    filter 180ms ease;
+}
+
 .nest-action {
+  --action-glow-color: rgba(41, 196, 255, 0.88);
+  --action-glow-color-2: rgba(9, 240, 162, 0.72);
+  --action-glow-core: rgba(224, 255, 250, 0.96);
   background-image:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.34), transparent 17%),
     linear-gradient(120deg, #09f0a2 0%, #29c4ff 45%, #8d6dff 100%);
@@ -529,6 +562,9 @@ select {
 }
 
 .export-action {
+  --action-glow-color: rgba(255, 196, 86, 0.9);
+  --action-glow-color-2: rgba(40, 214, 129, 0.72);
+  --action-glow-core: rgba(255, 250, 215, 0.96);
   grid-template-columns: minmax(0, 1fr) 28px 28px;
   background-image:
     radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.32), transparent 17%),
@@ -632,6 +668,8 @@ button {
 .nest-action > .icon-button,
 .export-action > #btn-export,
 .export-action > .icon-button {
+  position: relative;
+  z-index: 1;
   min-width: 0;
   border: none;
   border-radius: 0;
@@ -667,7 +705,17 @@ button {
 .nest-action:hover,
 .export-action:hover {
   filter: saturate(1.1) brightness(1.04);
-  transform: translateY(-5px) scale(1.02);
+  transform: translateY(-3px) scale(1.02);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.28),
+    0 13px 27px rgba(0, 0, 0, 0.34);
+}
+
+.nest-action:hover::before,
+.export-action:hover::before {
+  opacity: 0.95;
+  transform: translateY(0) scaleX(1);
 }
 
 .nest-action.is-busy,
@@ -678,6 +726,7 @@ button {
     0 0 24px rgba(88, 213, 255, 0.22),
     0 12px 28px rgba(0, 0, 0, 0.36);
   animation: action-busy-breathe 1.7s ease-in-out infinite;
+  overflow: visible;
 }
 
 #btn-run[aria-busy="true"],
